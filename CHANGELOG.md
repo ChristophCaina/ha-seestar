@@ -31,7 +31,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "Seestar S30 Pro") and only creates the **Wide camera** switch and the
   wide-field sensors on models that have a wide-angle camera. Until the model
   is reported they are left as they are, so a restart never makes them flicker.
-
 - Last-known telemetry survives driver and add-on restarts; unknown values stay
   honestly unknown. The bridge merges each poll cycle into a persistent
   per-scope snapshot (seeded once from its own retained MQTT state topic at
