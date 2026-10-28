@@ -48,6 +48,7 @@ from .entities import (
     device_block,
     discovery_payload,
     slug,
+    supports_control,
 )
 
 _log = logging.getLogger(__name__)
@@ -418,6 +419,9 @@ class ScopeWorker:
         # blank the published JSON. Only ever touched from the worker thread
         # (the seed runs at the top of run(), before the loop), so no lock.
         self._published_state: dict[str, Any] = {}
+        # The scope's own product_model (get_device_state), once reported:
+        # names the HA device model and decides the model-specific controls.
+        self._model: str | None = None
 
     # -- identity / topics ------------------------------------------------------
 
@@ -667,6 +671,21 @@ class ScopeWorker:
             out["charger_status"] = d("pi_status", "charger_status")
         return out
 
+    def _note_model(self, device_state: Any) -> None:
+        """Remember the scope's product_model; re-publish discovery when it changes.
+
+        The first report names the HA device model and publishes (or removes)
+        the model-specific controls, e.g. the S30-series wide camera.
+        """
+        if not isinstance(device_state, dict):
+            return
+        model = _nav(device_state, "device", "product_model")
+        if not isinstance(model, str) or not model.strip() or model.strip() == self._model:
+            return
+        self._model = model.strip()
+        _log.info("%s: model %s", self._device_id, self._model)
+        self.publish_discovery()
+
     # -- discovery + preview ----------------------------------------------------
 
     def publish_discovery(self) -> None:
@@ -675,7 +694,7 @@ class ScopeWorker:
         Namespaced under this scope's ``device_id`` so each scope appears as its
         own HA device.
         """
-        block = device_block(self._device_id, self._device_name)
+        block = device_block(self._device_id, self._device_name, self._model)
         prefix = self._settings.discovery_prefix
         for entity in ENTITIES:
             topic = f"{prefix}/{entity.component}/{self._device_id}/{entity.key}/config"
@@ -692,6 +711,12 @@ class ScopeWorker:
         # the ``control`` dispatch module imported at the top.
         for control_entity in CONTROL_ENTITIES:
             topic = f"{prefix}/{control_entity.component}/{self._device_id}/{control_entity.key}/config"
+            supported = supports_control(control_entity.key, self._model)
+            if supported is None:
+                continue                    # model not known yet: leave it as it is
+            if not supported:
+                self._mqtt.publish(topic, "", retain=True)   # removes the entity from HA
+                continue
             payload = control_discovery_payload(
                 control_entity,
                 device_block=block,
@@ -1363,8 +1388,9 @@ class ScopeWorker:
                 if reachable and now - last_slow >= state_poll and now >= slow_backoff_until:
                     last_slow = now
                     try:
-                        state.update(self.extract_device_state(
-                            self._alpaca.action("method_sync", {"method": _DEVICE_STATE_METHOD})))
+                        device_state = self._alpaca.action("method_sync", {"method": _DEVICE_STATE_METHOD})
+                        state.update(self.extract_device_state(device_state))
+                        self._note_model(device_state)
                         slow_fail_streak = 0
                         slow_backoff_until = 0.0
                     except TimeoutError:

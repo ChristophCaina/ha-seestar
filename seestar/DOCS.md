@@ -230,7 +230,7 @@ another.
 | **Mag declination** (number) | Magnetic-declination fudge angle for the compass calibration (±180°). | |
 | **Tracking** (switch) | Turns mount tracking on or off. | |
 | **Dew heater** (switch) | Turns the dew heater on or off. | ON applies a fixed power level of 90 (scale 0–100). |
-| **Wide camera** (switch) | Enables/disables the wide-angle camera. | S30-series only; upstream marks the setting experimental — see [Rough edges](#rough-edges). |
+| **Wide camera** (switch) | Enables/disables the wide-angle camera. | Only created on models with a wide-angle camera (S30, S30 Pro, S50 Pro); upstream marks the setting experimental — see [Rough edges](#rough-edges). |
 | **Record video** (switch) | Starts/stops planetary video recording. | Only records during a planetary live session — see [Rough edges](#rough-edges). |
 | **Plate-solve loop** (switch) | Starts/stops the polar-align plate-solve loop. | ON is a no-op on firmware > 2.47 — see [Rough edges](#rough-edges). |
 | **Run plan** (text) | Runs a saved plan **by name**: imports it, then starts the scheduler. | The name resolves under seestar_alp's own `schedule/` directory (where its SSC web UI saves plans); `.json` is appended if omitted. **No paths** — a name containing `/`, `\`, `..`, or starting with `~`/`.` is refused. |
@@ -271,7 +271,9 @@ against seestar_alp:
   turning the switch OFF still calls `stop_plate_solve_loop`.
 - **Wide camera is S30-series only.** The `wide_cam` setting exists on the
   S30/S30 Pro; seestar_alp's own web UI additionally hides the toggle behind an
-  experimental flag. Other models refuse or ignore it.
+  experimental flag. The add-on reads each scope's `product_model` and only
+  creates the switch on models with a wide-angle camera (S30, S30 Pro,
+  S50 Pro); on an S50 it is removed once the model has been reported.
 - **Record video only records during a planetary live session.** Outside one,
   the scope refuses `start_record_avi` in-band and the refusal shows as
   `error: …` on **Last command result**.
