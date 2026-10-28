@@ -806,7 +806,6 @@ def test_fetch_preview_downscales_valid_jpeg():
     assert max(decoded.size) <= 1280
 
 
-<<<<<<< HEAD
 def test_device_state_storage_used_percent():
     vol = {"name": "emmc", "state": "mounted", "totalMB": 51854, "freeMB": 46907, "used_percent": 21}
     assert ScopeWorker.extract_device_state({"storage": {"storage_volume": [vol]}})["disk_used_pct"] == 21
@@ -821,7 +820,6 @@ def test_device_state_storage_ignored_in_usb_mode():
     vol = {"state": "connected", "totalMB": 50000, "freeMB": 0}
     assert "disk_used_pct" not in ScopeWorker.extract_device_state({"storage": {"storage_volume": [vol]}})
     assert "disk_used_pct" not in ScopeWorker.extract_device_state({"storage": {}})
-=======
 class _RecordingMqtt:
     def __init__(self):
         self.published = []
@@ -860,4 +858,3 @@ def test_switch_resyncs_after_a_command_echo():
     mqtt.published.clear()
     worker._sync_switch_states({"dew_heater": False})
     assert [p for t, p in mqtt.published if "dew_heater_set" in t] == ["OFF"]
->>>>>>> fix/switch-state-from-device
