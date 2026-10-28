@@ -977,3 +977,49 @@ def test_missing_model_changes_nothing():
     for bad in (None, {}, {"device": {}}, {"device": {"product_model": "  "}}):
         worker._note_model(bad)
     assert mqtt.published == []
+# ------------------------------------------------------------ arm + solar system
+def test_arm_closed_follows_the_newest_arm_event():
+    worker = ScopeWorker(alpaca=_StubAlpaca(), device=DEVICE, settings=None,
+                         mqtt_client=_FakeMqtt(), scope_http_base=None)
+    state = worker.build_state({
+        "ScopeHome": {"Timestamp": "12968.0", "state": "complete", "close": True},
+        "ScopeMoveToHorizon": {"Timestamp": "13424.1", "state": "complete", "close": False},
+        "ScanSun": {"Timestamp": "13500.0", "state": "working"},
+    })
+    assert state["arm_closed"] is False
+    assert state["solar_scan_state"] == "working"
+
+
+def test_arm_closed_from_device_state():
+    assert ScopeWorker.extract_device_state({"mount": {"close": True}})["arm_closed"] is True
+    assert "arm_closed" not in ScopeWorker.extract_device_state({"mount": {}})
+
+
+def test_parse_planet_position():
+    from seestar_bridge.scope import parse_planet_position
+    assert parse_planet_position("05h 18m 48.04s, +22deg 23' 10.8\"") == (5.313344, 22.386333)
+    assert parse_planet_position("22h 01m 02.00s, -11deg 05' 00.0\"") == (22.017222, -11.083333)
+    assert parse_planet_position("Internal Server Error") is None
+
+
+def test_goto_planet_uses_the_looked_up_position():
+    alpaca = _StubAlpaca()
+    alpaca.calls = []
+    alpaca.action = lambda name, params: alpaca.calls.append((name, params)) or {}
+    worker = ScopeWorker(alpaca=alpaca, device=DEVICE, settings=None, mqtt_client=_FakeMqtt(),
+                         scope_http_base=None)
+    looked_up = []
+    worker._lookup_planet = lambda planet: looked_up.append(planet) or (5.31, 22.39)
+    base = worker.base_topic
+    worker.handle_command(f"{base}/cmd/controls_enabled", "ON")
+    worker.handle_command(f"{base}/cmd/planet", "mars")
+    worker.handle_command(f"{base}/cmd/goto_planet", "PRESS")
+    assert looked_up == ["mars"]
+    assert alpaca.calls[-1][1]["params"]["target_ra_dec"] == [5.31, 22.39]
+
+
+def test_goto_planet_skips_the_lookup_while_locked():
+    worker = ScopeWorker(alpaca=_StubAlpaca(), device=DEVICE, settings=None,
+                         mqtt_client=_FakeMqtt(), scope_http_base=None)
+    worker._lookup_planet = lambda planet: pytest.fail("looked up while controls are locked")
+    worker.handle_command(f"{worker.base_topic}/cmd/goto_planet", "PRESS")

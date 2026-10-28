@@ -206,6 +206,11 @@ ENTITIES: list[Entity] = [
     Entity("sensor", "azimuth", "Azimuth", "°", None, "measurement", "mdi:compass"),
     Entity("binary_sensor", "at_park", "Parked", None, None, None, "mdi:home-import-outline"),
     Entity("binary_sensor", "at_home", "At home", None, None, None, "mdi:home"),
+    # The arm's own fold state (ScopeHome / ScopeMoveToHorizon events, else
+    # get_device_state mount.close): what a goto needs to be false.
+    Entity("binary_sensor", "arm_closed", "Arm closed", None, None, None, "mdi:arrow-collapse-down"),
+    # State of the firmware's own Sun/Moon search (start_scan_planet).
+    Entity("sensor", "solar_scan_state", "Sun/Moon search", None, None, None, "mdi:weather-sunny"),
     Entity("sensor", "mount_mode", "Mount mode", None, None, None, "mdi:axis"),
     Entity("sensor", "last_alert", "Last alert", None, None, None, "mdi:alert-circle"),
     Entity("binary_sensor", "connected", "Connected", None, "connectivity", None, None),
@@ -329,6 +334,10 @@ class ControlEntity(NamedTuple):
 # the two are asserted disjoint-from-Phase-1 and consistent by the control tests).
 _IMAGING_MODES = ("star", "scenery", "planet", "sun", "moon")
 
+# Planets offered by the Planet select (mirrors control.PLANETS; asserted
+# consistent by the control tests).
+_PLANETS = ("mercury", "venus", "mars", "jupiter", "saturn", "uranus", "neptune")
+
 # Exposure bounds in MILLISECONDS — must mirror control.EXPOSURE_MIN/MAX_MS
 # (asserted consistent by the control tests): action_set_exposure's ``exp`` is
 # ms on the wire, so the HA number is ms end-to-end (solar ~1-5 ms up to 60 s).
@@ -376,6 +385,19 @@ CONTROL_ENTITIES: list[ControlEntity] = [
     ControlEntity(_COMPONENT_BUTTON, "goto", "Goto", "mdi:crosshairs-gps"),
     ControlEntity(_COMPONENT_BUTTON, "stop_goto", "Stop goto",
                   "mdi:crosshairs-off"),
+    # -- Solar system --
+    # Unfold the arm to the horizon (the counterpart of Park).
+    ControlEntity(_COMPONENT_BUTTON, "move_to_horizon", "Move to horizon",
+                  "mdi:arrow-expand-up"),
+    # Start the Imaging mode's view (moon or sun) and let the scope find it.
+    ControlEntity(_COMPONENT_BUTTON, "find_sun_moon", "Find Sun/Moon",
+                  "mdi:weather-night"),
+    # Planet is a stored VALUE; 'Goto planet' looks its current position up in
+    # seestar_alp and starts a planet view there.
+    ControlEntity(_COMPONENT_SELECT, "planet", "Planet", "mdi:orbit",
+                  options=_PLANETS),
+    ControlEntity(_COMPONENT_BUTTON, "goto_planet", "Goto planet",
+                  "mdi:crosshairs-gps"),
     ControlEntity(_COMPONENT_NUMBER, "exposure", "Stack exposure",
                   "mdi:camera-timer", min_value=_EXPOSURE_MIN_MS,
                   max_value=_EXPOSURE_MAX_MS, step=1, unit=_EXPOSURE_UNIT),

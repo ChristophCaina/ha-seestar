@@ -225,6 +225,10 @@ another.
 | **Goto Dec** (text) | Declination for **Goto**. | Decimal degrees (`41.269`) or sexagesimal (`+41d16m9s`, `-05:23:28`); ±90°, J2000. |
 | **Goto** (button) | Slews to the stored RA/Dec, labelled with the stored target name. | **Refuses without parseable, in-range coordinates** — it never guesses where a name is. |
 | **Stop goto** (button) | Aborts an in-progress goto. | |
+| **Move to horizon** (button) | Unfolds the arm to the horizon — the counterpart of **Park**. | A goto fails (`mount goto failed`) while the arm is folded; watch **Arm closed**. Takes ~15–20 s. |
+| **Find Sun/Moon** (button) | Starts the view in the stored **Imaging mode** and lets the scope find the Sun or Moon itself (`start_scan_planet`). | **Refuses unless Imaging mode is `moon` or `sun`.** No coordinates involved; needs a clear view of the target. ⚠️ Sun only with the solar filter on. Progress on **Sun/Moon search**. |
+| **Planet** (select) | Chooses the planet (`mercury` … `neptune`) for **Goto planet**. | **Value-only**, like Imaging mode. Defaults to `jupiter`. |
+| **Goto planet** (button) | Looks up the planet's current position in seestar_alp (its own *Search For: Planet*, `/getplanetcoordinates`) and starts a planet view there. | **Refuses when the lookup fails** — a planet position is never guessed. Needs seestar_alp's web UI (`alpaca_webui_port`). |
 | **Stack exposure** (number) | Sets the stacking exposure **in milliseconds** (1–60000). | ms end-to-end: solar work is ~1–5 ms; deep-sky stacking is tens of seconds (`10000`, `30000`). |
 | **Gain** (number) | Sets the camera ISP gain (0–300). | The same `set_setting` call seestar_alp's own web UI makes. |
 | **Focus** (number) | Nudges the focuser by a relative number of steps (−500…500). | |
