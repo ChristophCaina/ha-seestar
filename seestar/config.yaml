@@ -5,9 +5,9 @@
 # resolution, the conditional bundled driver, and per-scope discovery; their keys
 # match seestar_bridge.settings.load_settings verbatim. The Supervisor reads the
 # image from GHCR ({arch} is substituted per architecture).
-name: Seestar for Home Assistant
-slug: seestar
-version: "1.0.6"
+name: Seestar (dev)
+slug: seestar_dev
+version: "1.0.6-dev1"
 description: >-
   Live Seestar imaging telemetry + a stacked-image preview in Home Assistant via
   MQTT discovery. Bundles the seestar_alp driver, or reuses your own.
@@ -39,7 +39,7 @@ services:
   - mqtt:want
 
 # Prebuilt multi-arch image; {arch} is substituted by the Supervisor.
-image: ghcr.io/jaxzin/ha-seestar-{arch}
+# image: entfernt im dev-Branch - der Supervisor baut lokal aus dem Dockerfile
 
 options:
   scopes: []
