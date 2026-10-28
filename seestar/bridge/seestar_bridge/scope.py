@@ -46,6 +46,7 @@ from .entities import (
     control_discovery_payload,
     control_state_topic,
     device_block,
+    gate_topic,
     discovery_payload,
     slug,
 )
@@ -712,6 +713,7 @@ class ScopeWorker:
                 device_block=block,
                 base_topic=self.base_topic,
                 bridge_availability_topic=self._bridge_availability_topic,
+                gate_topics=self._gate_topics_for(control_entity.key),
             )
             self._mqtt.publish(topic, json.dumps(payload), retain=True)
         camera = {
@@ -783,6 +785,37 @@ class ScopeWorker:
         """
         self._publish_control_state(_CONTROLS_ENABLED_KEY, self._controls_enabled)
         self._publish_control_state(_ALLOW_POWER_KEY, self._allow_power)
+        self._publish_gates()
+
+    def _gate_availability(self) -> bool:
+        return bool(getattr(self._settings, "gate_availability", False))
+
+    def _gate_topics_for(self, key: str) -> tuple[str, ...]:
+        """Extra availability topics for one command entity (gate_availability on).
+
+        The safety switches and the stored inputs (imaging mode, goto fields:
+        values only, never dispatched) stay available; every other command needs
+        Controls enabled, and the power actions also Allow power actions.
+        """
+        if not self._gate_availability() or key in _SAFETY_SWITCH_KEYS:
+            return ()
+        if control.stored_input_for(key) is not None:
+            return ()
+        ctl = control.control_for(key)
+        if ctl is None:
+            return ()
+        gate = "power" if ctl.power_gated else "controls"
+        return (gate_topic(self.base_topic, gate),)
+
+    def _publish_gates(self) -> None:
+        """Publish the gate availability topics (retained) from the safety switches."""
+        if not self._gate_availability():
+            return
+        controls = self._controls_enabled
+        power = self._controls_enabled and self._allow_power
+        for gate, open_ in (("controls", controls), ("power", power)):
+            self._mqtt.publish(gate_topic(self.base_topic, gate),
+                               _PAYLOAD_AVAILABLE if open_ else _PAYLOAD_NOT_AVAILABLE, retain=True)
 
     def _publish_control_state(self, key: str, value: Any) -> None:
         """Publish one control's current value to its retained ``state_topic``.
@@ -866,6 +899,7 @@ class ScopeWorker:
         _log.info("%s: safety switch %s -> %s", self._device_id, key,
                   _SWITCH_ON if value else _SWITCH_OFF)
         self._publish_control_state(key, value)
+        self._publish_gates()
 
     def _apply_stored_input(self, key: str, payload: str) -> None:
         """Store a value-only input and echo it (retained) to its state_topic.

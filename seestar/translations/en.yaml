@@ -28,6 +28,13 @@ configuration:
       External mode only: open your own seestar_alp's web UI in the Home Assistant
       sidebar (and the companion app, also remotely) through ingress, including the
       live view. Off = show a page that links to it instead.
+  gate_availability:
+    name: Show locked controls as unavailable
+    description: >-
+      While Controls enabled is off, show the command entities (buttons, switches,
+      numbers) as unavailable instead of accepting and refusing presses. Power
+      actions also need Allow power actions. The two safety switches and the goto /
+      imaging-mode inputs stay available.
   mqtt_host:
     name: MQTT host
     description: >-

@@ -7,7 +7,7 @@
 # image from GHCR ({arch} is substituted per architecture).
 name: Seestar (dev)
 slug: seestar_dev
-version: "1.0.6-dev3"
+version: "1.0.6-dev4"
 description: >-
   Live Seestar imaging telemetry + a stacked-image preview in Home Assistant via
   MQTT discovery. Bundles the seestar_alp driver, or reuses your own.
@@ -47,6 +47,7 @@ options:
   alpaca_webui_port: 5432
   imaging_port: 7556
   proxy_external_webui: true
+  gate_availability: false
   mqtt_host: ""
   mqtt_port: 1883
   mqtt_username: ""
@@ -71,6 +72,8 @@ schema:
   imaging_port: port
   # External mode: serve your seestar_alp web UI through ingress (sidebar/app).
   proxy_external_webui: bool
+  # Gated command entities read unavailable while Controls enabled is off.
+  gate_availability: bool
   # MQTT overrides; blank/0 = use the Supervisor (Mosquitto add-on) service.
   mqtt_host: str?
   mqtt_port: port

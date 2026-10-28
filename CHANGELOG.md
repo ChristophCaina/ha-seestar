@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ingress, so it works in the HA sidebar and the companion app — also remotely
   and behind HTTPS. URLs in HTML/JS/CSS are rewritten onto the ingress path. New
   option `proxy_external_webui` (default on; off restores the link-out page).
+- Option `gate_availability`: gated command entities read *unavailable* while
+  **Controls enabled** (and, for power actions, **Allow power actions**) is off.
 - Phase-2 control layer: safety-gated MQTT command entities per scope (imaging
   sessions, goto, saved-plan execution, settings, power) behind two default-off
   safety switches, with every dispatch outcome surfaced on a **Last command
