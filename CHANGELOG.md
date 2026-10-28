@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Solar-system controls: **Move to horizon** (unfold the arm), **Find Sun/Moon**
+  (start the moon/sun view and let the firmware find it), and **Goto planet**
+  with a **Planet** select (current position looked up in seestar_alp). New
+  sensors **Arm closed** and **Sun/Moon search** report the arm's fold state and
+  the search progress, so automations can wait on them.
 - Phase-2 control layer: safety-gated MQTT command entities per scope (imaging
   sessions, goto, saved-plan execution, settings, power) behind two default-off
   safety switches, with every dispatch outcome surfaced on a **Last command

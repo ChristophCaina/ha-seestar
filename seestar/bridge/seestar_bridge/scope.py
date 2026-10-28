@@ -29,6 +29,7 @@ import http.client
 import io
 import json
 import logging
+import re
 import threading
 import time
 import urllib.error
@@ -225,7 +226,20 @@ _STATEFUL_DISPATCH_COMPONENTS = frozenset({
 _SESSION_START_KEYS = frozenset({
     "start_live_view", "start_stack", "run_plan",
     "goto", "start_mosaic", "start_spectra",
+    "find_sun_moon", "goto_planet",
 })
+
+#: Events whose ``close`` field reports the arm's fold state (park / unfold).
+_ARM_EVENTS = ("ScopeHome", "ScopeMoveToHorizon")
+#: Prefix of the firmware's Sun/Moon search events (ScanSun, ...).
+_SCAN_EVENT_PREFIX = "Scan"
+#: seestar_alp's planet-position lookup (its SSC "Search For: Planet").
+_PLANET_LOOKUP_PATH = "/getplanetcoordinates"
+_PLANET_LOOKUP_TIMEOUT_SEC = 15
+#: "05h 18m 48.04s, +22deg 23' 10.8\"" (skyfield Angle strings, JNow).
+_PLANET_POS_RE = re.compile(
+    r"""(?P<rh>\d+)h\s*(?P<rm>\d+)m\s*(?P<rs>[\d.]+)s\s*,\s*"""
+    r"""(?P<sign>[+-]?)(?P<dd>\d+)deg\s*(?P<dm>\d+)'\s*(?P<ds>[\d.]+)\"""")
 
 #: Dispatch-catalog keys whose OK dispatch ends (or stows/powers off) the
 #: session, clearing ownership.
@@ -342,6 +356,20 @@ def _mount_mode_label(equ_mode: bool) -> str:
     return _MOUNT_MODE_EQUATORIAL if equ_mode else _MOUNT_MODE_ALT_AZ
 
 
+def parse_planet_position(text: str) -> tuple[float, float] | None:
+    """Parse seestar_alp's planet lookup reply -> (RA hours, Dec degrees), or None."""
+    match = _PLANET_POS_RE.search(text or "")
+    if match is None:
+        return None
+    ra = (int(match["rh"]) + int(match["rm"]) / 60 + float(match["rs"]) / 3600)
+    dec = (int(match["dd"]) + int(match["dm"]) / 60 + float(match["ds"]) / 3600)
+    if match["sign"] == "-":
+        dec = -dec
+    if not (0 <= ra < 24 and -90 <= dec <= 90):
+        return None
+    return round(ra, 6), round(dec, 6)
+
+
 def _nav(obj: Any, *path: Any, default: Any = None) -> Any:
     """Safely navigate nested dict/list by keys/indices (Phase-1 ``_nav``)."""
     for key in path:
@@ -411,6 +439,7 @@ class ScopeWorker:
         # buttons' dispatch. Imaging mode starts at the documented default.
         self._stored_inputs: dict[str, str] = {
             control.IMAGING_MODE_KEY: control.DEFAULT_IMAGING_MODE,
+            control.PLANET_KEY: control.DEFAULT_PLANET,
         }
         # Last-known merged state snapshot (see the _CYCLE_FRESH_KEYS block):
         # seeded once from our own retained state topic at startup, then merged
@@ -507,7 +536,33 @@ class ScopeWorker:
         self._extract_plan(state, g)
         self._extract_detections(state, g)
         self._extract_misc(state, g)
+        self._extract_arm_and_scan(state, event_state)
         return state
+
+    @staticmethod
+    def _extract_arm_and_scan(state, event_state):
+        """Arm fold state + Sun/Moon search state from the newest matching event."""
+        def newest(names):
+            best, best_t = None, None
+            for name in names:
+                event = event_state.get(name)
+                if not isinstance(event, dict):
+                    continue
+                try:
+                    t = float(event.get("Timestamp"))
+                except (TypeError, ValueError):
+                    t = float("-inf")
+                if best_t is None or t > best_t:
+                    best, best_t = event, t
+            return best
+
+        arm = newest(_ARM_EVENTS)
+        if arm is not None and isinstance(arm.get("close"), bool):
+            state["arm_closed"] = arm["close"]
+        scan = newest([k for k in event_state if isinstance(k, str)
+                       and k.startswith(_SCAN_EVENT_PREFIX)])
+        if scan is not None and scan.get("state"):
+            state["solar_scan_state"] = scan["state"]
 
     @staticmethod
     def _extract_health(state, g):
@@ -657,6 +712,8 @@ class ScopeWorker:
             out["mount_mode"] = _mount_mode_label(bool(d("mount", "equ_mode")))
         if d("focuser", "step") is not None:
             out["focuser"] = d("focuser", "step")
+        if isinstance(d("mount", "close"), bool):
+            out["arm_closed"] = d("mount", "close")
         if d("setting", "heater_enable") is not None:
             out["dew_heater"] = bool(d("setting", "heater_enable"))
         if d("device", "firmware_ver_string"):
@@ -882,17 +939,45 @@ class ScopeWorker:
         a blocked/failed command in HA; the dispatcher's log line is not the only
         trace.
         """
+        stored: dict[str, Any] = dict(self._stored_inputs)
+        if key == "goto_planet" and self._controls_enabled:
+            # Look the CURRENT position up right before the slew (read-only).
+            # On failure the coordinates stay absent and the builder refuses.
+            position = self._lookup_planet(stored.get(control.PLANET_KEY, control.DEFAULT_PLANET))
+            if position is not None:
+                stored[control.PLANET_RA_KEY], stored[control.PLANET_DEC_KEY] = position
         result = control.dispatch(
             self._alpaca, key, payload,
             controls_enabled=self._controls_enabled,
             allow_power=self._allow_power,
-            stored=self._stored_inputs,
+            stored=stored,
         )
         if result.status is DispatchStatus.OK:
             self._track_session_ownership(key)
             if self._control_is_stateful(key):
                 self._publish_control_state(key, payload)
         self._publish_command_result(result.status.value, result.reason or key)
+
+    def _lookup_planet(self, planet: str) -> tuple[float, float] | None:
+        """A planet's current (JNow) RA hours / Dec degrees from seestar_alp, or None."""
+        base = getattr(self._settings, "webui_base", None)
+        if not base:
+            _log.warning("%s: no seestar_alp web UI configured; cannot look up %s",
+                         self._device_id, planet)
+            return None
+        url = (f"{base.rstrip('/')}{_PLANET_LOOKUP_PATH}?planetname="
+               + urllib.parse.quote(f"{planet} barycenter"))
+        try:
+            with urllib.request.urlopen(url, timeout=_PLANET_LOOKUP_TIMEOUT_SEC) as resp:
+                text = resp.read().decode("utf-8", errors="replace")
+        except (OSError, http.client.HTTPException) as exc:
+            _log.warning("%s: planet lookup for %s failed: %s", self._device_id, planet, exc)
+            return None
+        position = parse_planet_position(text)
+        if position is None:
+            _log.warning("%s: unexpected planet lookup reply for %s: %r",
+                         self._device_id, planet, text[:120])
+        return position
 
     def _publish_command_result(self, status: str, detail: str) -> None:
         """Publish one dispatch outcome (retained) to the command-result topic.

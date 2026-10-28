@@ -341,6 +341,9 @@ def test_every_session_start_key_flips_ownership(start_key):
     # dispatch is OK (a refused goto must not — and does not — flip ownership).
     worker.handle_command(_cmd_topic("goto_ra"), "5.591")
     worker.handle_command(_cmd_topic("goto_dec"), "-5.39")
+    # find_sun_moon needs a moon/sun imaging mode; goto_planet a looked-up position.
+    worker.handle_command(_cmd_topic("imaging_mode"), "moon")
+    worker._lookup_planet = lambda _planet: (5.31, 22.39)
     # run_plan is a text control (a plan name); buttons take PRESS.
     payload = "tonight" if start_key == "run_plan" else "PRESS"
     worker.handle_command(_cmd_topic(start_key), payload)
