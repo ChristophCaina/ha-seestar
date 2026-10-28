@@ -64,6 +64,11 @@ _STATE_SUBTOPIC = "state"
 _AVAILABILITY_SUBTOPIC = "availability"
 
 
+def gate_topic(base_topic: str, gate: str) -> str:
+    """Availability topic of one safety gate (``controls`` or ``power``)."""
+    return f"{base_topic}/gate/{gate}"
+
+
 def availability_list(*topics: str) -> list[dict[str, str]]:
     """Build an MQTT-discovery ``availability`` list over one or more topics.
 
@@ -386,8 +391,12 @@ def control_discovery_payload(
     device_block: dict[str, Any],
     base_topic: str,
     bridge_availability_topic: str,
+    gate_topics: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Build the MQTT discovery config for one command entity.
+
+    ``gate_topics`` (optional) are extra availability topics ANDed in, so a gated
+    command entity reads *unavailable* while its safety switch is off.
 
     Every command entity gets a ``command_topic`` (``seestar/<device>/cmd/<key>``)
     the bridge subscribes to. Stateful controls (switch/select/number/text) also
@@ -407,7 +416,7 @@ def control_discovery_payload(
         "unique_id": f"{device_id}_{entity.key}",
         "object_id": f"{device_id}_{entity.key}",
         "command_topic": cmd_topic,
-        "availability": availability_list(bridge_availability_topic, scope_availability_topic),
+        "availability": availability_list(bridge_availability_topic, scope_availability_topic, *gate_topics),
         "availability_mode": _AVAILABILITY_MODE_ALL,
         "device": device_block,
     }

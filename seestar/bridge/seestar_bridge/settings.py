@@ -79,6 +79,9 @@ class Settings:
     #: grabs frames from ``http://<alpaca host>:<imaging_port>/<device_num>/vid``.
     imaging_port: int = DEFAULT_IMAGING_PORT
     alpaca_webui_port: int = DEFAULT_ALPACA_WEBUI_PORT
+    #: Show gated command entities as unavailable while their safety switch is off
+    #: (Controls enabled; power actions also Allow power actions).
+    gate_availability: bool = False
 
 
 def with_alpaca_endpoint(settings: Settings, host_port: str) -> Settings:
@@ -202,6 +205,7 @@ def load_settings(options, env):
         mqtt=_resolve_mqtt(options, env),
         imaging_port=int(options.get("imaging_port", DEFAULT_IMAGING_PORT)),
         alpaca_webui_port=int(options.get("alpaca_webui_port", DEFAULT_ALPACA_WEBUI_PORT)),
+        gate_availability=_as_bool(options.get("gate_availability"), False),
     )
     alpaca_host = (options.get("alpaca_host") or "").strip()
     return with_alpaca_endpoint(settings, alpaca_host) if alpaca_host else settings
