@@ -804,3 +804,57 @@ def test_fetch_preview_downscales_valid_jpeg():
     # Downscaled to <= preview_max_px on the long edge.
     decoded = pil.open(io.BytesIO(out))
     assert max(decoded.size) <= 1280
+
+
+class _GateMqtt:
+    def __init__(self):
+        self.published = []
+
+    def publish(self, topic, payload, retain=False):
+        self.published.append((topic, payload))
+
+
+class _GateSettings:
+    discovery_prefix = "homeassistant"
+    gate_availability = True
+
+
+def _config(mqtt, key):
+    for topic, payload in mqtt.published:
+        if topic.endswith(f"/{key}/config"):
+            return json.loads(payload)
+    raise AssertionError(key)
+
+
+def test_gate_availability_marks_gated_commands():
+    mqtt = _GateMqtt()
+    worker = ScopeWorker(alpaca=_StubAlpaca(), device=DEVICE, settings=_GateSettings(),
+                         mqtt_client=mqtt, scope_http_base=None,
+                         bridge_availability_topic="seestar/bridge/availability")
+    worker.publish_discovery()
+    avail = lambda key: [a["topic"] for a in _config(mqtt, key)["availability"]]  # noqa: E731
+    assert avail("goto")[-1].endswith("/gate/controls")
+    assert avail("park")[-1].endswith("/gate/power")
+    assert not any("/gate/" in t for t in avail("controls_enabled"))
+    assert not any("/gate/" in t for t in avail("goto_target"))
+    gates = {t: p for t, p in mqtt.published if "/gate/" in t}
+    assert set(gates.values()) == {"offline"}          # fail-safe: closed at start
+
+    mqtt.published.clear()
+    worker.handle_command(f"{worker.base_topic}/cmd/controls_enabled", "ON")
+    gates = {t.rsplit("/", 1)[1]: p for t, p in mqtt.published if "/gate/" in t}
+    assert gates == {"controls": "online", "power": "offline"}
+
+
+def test_gate_availability_off_by_default():
+    mqtt = _GateMqtt()
+
+    class _S(_GateSettings):
+        gate_availability = False
+
+    worker = ScopeWorker(alpaca=_StubAlpaca(), device=DEVICE, settings=_S(),
+                         mqtt_client=mqtt, scope_http_base=None,
+                         bridge_availability_topic="seestar/bridge/availability")
+    worker.publish_discovery()
+    assert not any("/gate/" in t for t, _ in mqtt.published)
+    assert not any("/gate/" in a["topic"] for a in _config(mqtt, "goto")["availability"])

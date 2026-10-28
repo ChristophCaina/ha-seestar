@@ -22,6 +22,13 @@ configuration:
     description: >-
       External mode only: the port your seestar_alp serves its /config page on, used
       to look up each scope's address for the preview. Default 5432.
+  gate_availability:
+    name: Show locked controls as unavailable
+    description: >-
+      While Controls enabled is off, show the command entities (buttons, switches,
+      numbers) as unavailable instead of accepting and refusing presses. Power
+      actions also need Allow power actions. The two safety switches and the goto /
+      imaging-mode inputs stay available.
   mqtt_host:
     name: MQTT host
     description: >-

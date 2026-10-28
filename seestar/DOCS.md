@@ -126,6 +126,7 @@ Setting **both** `scopes` and `alpaca_host` is rejected at startup; so is settin
 | `alpaca_host` | string | `""` | Blank = run the bundled driver. Set to `host:port` of your own seestar_alp to reuse it (and leave `scopes` empty). |
 | `alpaca_webui_port` | port | `5432` | **External mode only.** The port your seestar_alp serves its config on, used to look up each scope's address for the preview. |
 | `imaging_port` | port | `7556` | Port of seestar_alp's imaging server on the Alpaca host, where the Live view camera grabs its `/vid` MJPEG frames. Change only for an external seestar_alp bound to a non-stock imaging port. |
+| `gate_availability` | bool | `false` | Show the gated command entities as **unavailable** while **Controls enabled** is off (power actions: also **Allow power actions**), so a locked control greys out instead of silently refusing. The two safety switches and the goto / imaging-mode inputs stay available. Automations that arm the gate and then press a button should wait until the button is available. |
 | `mqtt_host` | string | `""` | Blank = use the Mosquitto add-on via the Supervisor. Set to override with another broker. |
 | `mqtt_port` | port | `1883` | Ignored while `mqtt_host` is blank (the Supervisor service supplies the port). Set `8883` for a TLS broker when overriding `mqtt_host`. |
 | `mqtt_username` | string | `""` | Broker username. Leave blank with the Mosquitto add-on. |

@@ -46,6 +46,7 @@ options:
   alpaca_host: ""
   alpaca_webui_port: 5432
   imaging_port: 7556
+  gate_availability: false
   mqtt_host: ""
   mqtt_port: 1883
   mqtt_username: ""
@@ -68,6 +69,8 @@ schema:
   alpaca_webui_port: port
   # seestar_alp's imaging server on the Alpaca host (the live /vid camera).
   imaging_port: port
+  # Gated command entities read unavailable while Controls enabled is off.
+  gate_availability: bool
   # MQTT overrides; blank/0 = use the Supervisor (Mosquitto add-on) service.
   mqtt_host: str?
   mqtt_port: port

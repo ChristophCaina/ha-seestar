@@ -84,6 +84,9 @@ class Settings:
     #: Port of seestar_alp's imaging server on the Alpaca host; the live camera
     #: grabs frames from ``http://<alpaca host>:<imaging_port>/<device_num>/vid``.
     imaging_port: int = DEFAULT_IMAGING_PORT
+    #: Show gated command entities as unavailable while their safety switch is off
+    #: (Controls enabled; power actions also Allow power actions).
+    gate_availability: bool = False
 
 
 def _as_bool(value, default=False):
@@ -214,4 +217,5 @@ def load_settings(options, env):
         log_level=_resolve_log_level(options.get("log_level")),
         mqtt=_resolve_mqtt(options, env),
         imaging_port=int(options.get("imaging_port", DEFAULT_IMAGING_PORT)),
+        gate_availability=_as_bool(options.get("gate_availability"), False),
     )

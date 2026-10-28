@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Option `gate_availability`: gated command entities read *unavailable* while
+  **Controls enabled** (and, for power actions, **Allow power actions**) is off.
 - Phase-2 control layer: safety-gated MQTT command entities per scope (imaging
   sessions, goto, saved-plan execution, settings, power) behind two default-off
   safety switches, with every dispatch outcome surfaced on a **Last command
