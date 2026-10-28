@@ -24,6 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (Apache-2.0 + GPL-3.0 attribution), and the `seestar_bridge` Python package
   skeleton with a pytest setup.
 
+### Fixed
+
+- **Dew heater** and **Tracking** switches follow the scope's own reading
+  instead of only echoing the last accepted command, so they no longer show *on*
+  while the heater is off (changed in the app, after a reboot, or ignored).
+
 ### Changed
 
 - Last-known telemetry survives driver and add-on restarts; unknown values stay
