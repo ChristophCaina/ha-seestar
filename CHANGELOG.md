@@ -24,12 +24,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (Apache-2.0 + GPL-3.0 attribution), and the `seestar_bridge` Python package
   skeleton with a pytest setup.
 
-### Fixed
-
-- **Dew heater** and **Tracking** switches follow the scope's own reading
-  instead of only echoing the last accepted command, so they no longer show *on*
-  while the heater is off (changed in the app, after a reboot, or ignored).
-
 ### Changed
 
 - Last-known telemetry survives driver and add-on restarts; unknown values stay
@@ -50,6 +44,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Dew heater**, **Tracking** and **Wide camera** switches follow the scope's
+  own reading instead of only echoing the last accepted command, so they no
+  longer show *on* while the heater is off (changed in the app, after a reboot,
+  or ignored). After an add-on restart they start from the last-known reading
+  instead of *unknown*.
 - External mode: the Open Web UI panel now shows a link to the external
   seestar_alp web UI instead of a 502.
 - The per-scope worker loop is now unkillable by a single cycle's exception: a
