@@ -822,6 +822,7 @@ def test_wide_camera_left_alone_until_the_model_is_known():
     worker, mqtt = _model_worker()
     worker.publish_discovery()
     assert _configs(mqtt, "wide_cam") == []          # neither published nor removed
+    assert _configs(mqtt, "wide_gain") == []
     assert _configs(mqtt, "dew_heater_set")         # the rest is published as usual
 
 
@@ -829,6 +830,8 @@ def test_s50_removes_the_wide_camera_and_names_the_model():
     worker, mqtt = _model_worker()
     worker._note_model({"device": {"product_model": "Seestar S50"}})
     assert _configs(mqtt, "wide_cam") == [("", True)]
+    assert _configs(mqtt, "wide_state") == [("", True)]       # wide-field sensors too
+    assert _configs(mqtt, "telephoto_state")
     heater = json.loads(_configs(mqtt, "dew_heater_set")[-1][0])
     assert heater["device"]["model"] == "Seestar S50"
     mqtt.published.clear()

@@ -14,7 +14,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import pytest
 
 import seestar_bridge.main as main_mod
-from seestar_bridge.entities import ENTITIES
+from seestar_bridge.entities import ENTITIES, MODEL_SPECIFIC
 from seestar_bridge.main import (
     BRIDGE_AVAILABILITY_TOPIC,
     assign_device_ids,
@@ -119,9 +119,13 @@ def test_build_workers_enumerates_and_publishes_discovery_per_device():
     assert [w.device_id for w in workers] == ["seestar_alpha", "seestar_beta"]
 
     topics = [topic for topic, _payload, _retain in fake_mqtt.published]
-    # Every entity + the camera, namespaced under each device id.
+    # Every entity + the camera, namespaced under each device id. Model-specific
+    # entities wait until the scope reports its model.
     for device_id in ("seestar_alpha", "seestar_beta"):
         for entity in ENTITIES:
+            if entity.key in MODEL_SPECIFIC:
+                assert f"homeassistant/{entity.component}/{device_id}/{entity.key}/config" not in topics
+                continue
             assert f"homeassistant/{entity.component}/{device_id}/{entity.key}/config" in topics
         assert f"homeassistant/camera/{device_id}/preview/config" in topics
     # Discovery is retained.

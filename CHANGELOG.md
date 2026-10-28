@@ -28,9 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Model-aware entities: the add-on reads each scope's `product_model` from
   `get_device_state`, names the HA device after it (instead of a fixed
-  "Seestar S30 Pro") and only creates the **Wide camera** switch on models that
-  have a wide-angle camera. Until the model is reported the switch is left as
-  it is, so a restart never makes it flicker.
+  "Seestar S30 Pro") and only creates the **Wide camera** switch and the
+  wide-field sensors on models that have a wide-angle camera. Until the model
+  is reported they are left as they are, so a restart never makes them flicker.
 
 - Last-known telemetry survives driver and add-on restarts; unknown values stay
   honestly unknown. The bridge merges each poll cycle into a persistent
