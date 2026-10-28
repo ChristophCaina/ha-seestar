@@ -86,10 +86,47 @@ def availability_list(*topics: str) -> list[dict[str, str]]:
         for topic in topics
     ]
 
-# Static identity for the Seestar S30 Pro hardware. Per-scope identity (id/name)
-# is injected via ``device_block`` so multiple scopes don't collide.
+# Static manufacturer; per-scope identity (id/name/model) is injected via
+# ``device_block`` so multiple scopes don't collide. ``_MODEL`` is the fallback
+# until the scope reports its own ``product_model``.
 _MANUFACTURER = "ZWO"
-_MODEL = "Seestar S30 Pro"
+_MODEL = "Seestar"
+
+
+def model_family(model: Any) -> tuple[str | None, bool]:
+    """Normalise a ``product_model`` string to ("S30"|"S50", is_pro).
+
+    The firmware reports "Seestar " + a short name (S50, S50N, S30, S30P, S50P);
+    older builds use "S30 Pro"/"S50 Pro". Same loose match as seestar_alp's
+    ``_model_family`` (an S30 Plus reads as a plain S30); ``(None, False)`` when unknown.
+    """
+    compact = re.sub(r"[\s_-]+", "", str(model or "")).lower()
+    m = re.search(r"s(30|50)(pro|p(?!lus))?", compact)
+    if not m:
+        return None, False
+    return f"S{m.group(1)}", bool(m.group(2))
+
+
+def has_wide_camera(model: Any) -> bool:
+    """S30, S30 Pro and S50 Pro have a wide-angle camera; the S50 does not."""
+    family, is_pro = model_family(model)
+    return family == "S30" or (family == "S50" and is_pro)
+
+
+#: Control entities that only exist on some models: key -> predicate on the
+#: reported ``product_model``. Until the model is known they are left as they
+#: are (neither published nor removed), so a restart never makes them flicker.
+MODEL_SPECIFIC_CONTROLS = {"wide_cam": has_wide_camera}
+
+
+def supports_control(key: str, model: Any) -> bool | None:
+    """True/False once ``model`` is known; None while it is still unknown."""
+    predicate = MODEL_SPECIFIC_CONTROLS.get(key)
+    if predicate is None:
+        return True
+    if not model:
+        return None
+    return predicate(model)
 
 # value_template forms: binary sensors map truthiness to ON/OFF; plain sensors
 # pass the value through, emitting "" for a missing (None) field so HA shows the
@@ -188,7 +225,7 @@ def slug(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
 
 
-def device_block(device_id: str, device_name: str) -> dict[str, Any]:
+def device_block(device_id: str, device_name: str, model: str | None = None) -> dict[str, Any]:
     """The MQTT discovery ``device`` block tying every entity to one HA device.
 
     ``device_id`` (a slug of the scope name) is the stable identifier; the
@@ -198,7 +235,7 @@ def device_block(device_id: str, device_name: str) -> dict[str, Any]:
         "identifiers": [device_id],
         "name": device_name,
         "manufacturer": _MANUFACTURER,
-        "model": _MODEL,
+        "model": model or _MODEL,
     }
 
 

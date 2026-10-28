@@ -931,3 +931,46 @@ def test_seed_gives_switches_their_last_known_state(monkeypatch):
     published = {m[0]: m[1] for m in mqtt_client.published}
     assert [p for t, p in published.items() if "tracking_set" in t] == ["OFF"]
     assert [p for t, p in published.items() if "dew_heater_set" in t] == ["ON"]
+
+# --------------------------------------------------------- model-aware controls
+def _model_worker():
+    mqtt = _FakeMqtt()
+    worker = ScopeWorker(alpaca=_StubAlpaca(), device=DEVICE, settings=_cycle_settings(),
+                         mqtt_client=mqtt, scope_http_base=None)
+    return worker, mqtt
+
+
+def _configs(mqtt, key):
+    return [(p, r) for t, p, r in mqtt.published if t.endswith(f"/{key}/config")]
+
+
+def test_wide_camera_left_alone_until_the_model_is_known():
+    worker, mqtt = _model_worker()
+    worker.publish_discovery()
+    assert _configs(mqtt, "wide_cam") == []          # neither published nor removed
+    assert _configs(mqtt, "dew_heater_set")         # the rest is published as usual
+
+
+def test_s50_removes_the_wide_camera_and_names_the_model():
+    worker, mqtt = _model_worker()
+    worker._note_model({"device": {"product_model": "Seestar S50"}})
+    assert _configs(mqtt, "wide_cam") == [("", True)]
+    heater = json.loads(_configs(mqtt, "dew_heater_set")[-1][0])
+    assert heater["device"]["model"] == "Seestar S50"
+    mqtt.published.clear()
+    worker._note_model({"device": {"product_model": "Seestar S50"}})   # unchanged -> no re-publish
+    assert mqtt.published == []
+
+
+def test_s30_pro_gets_the_wide_camera():
+    worker, mqtt = _model_worker()
+    worker._note_model({"device": {"product_model": "Seestar S30P"}})
+    payload, retain = _configs(mqtt, "wide_cam")[-1]
+    assert retain and json.loads(payload)["name"] == "Wide camera"
+
+
+def test_missing_model_changes_nothing():
+    worker, mqtt = _model_worker()
+    for bad in (None, {}, {"device": {}}, {"device": {"product_model": "  "}}):
+        worker._note_model(bad)
+    assert mqtt.published == []
