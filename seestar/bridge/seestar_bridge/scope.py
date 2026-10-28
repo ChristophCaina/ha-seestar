@@ -49,7 +49,7 @@ from .entities import (
     gate_topic,
     discovery_payload,
     slug,
-    supports_control,
+    supports_entity,
 )
 
 _log = logging.getLogger(__name__)
@@ -702,6 +702,17 @@ class ScopeWorker:
         _log.info("%s: model %s", self._device_id, self._model)
         self.publish_discovery()
 
+    def _publish_if_supported(self, topic: str, key: str) -> bool:
+        """Whether to publish ``key``'s discovery config for this scope's model.
+
+        Unsupported on the reported model -> clear the retained config (removes
+        the entity from HA). Model not reported yet -> leave it as it is.
+        """
+        supported = supports_entity(key, self._model)
+        if supported is False:
+            self._mqtt.publish(topic, "", retain=True)
+        return bool(supported)
+
     # -- discovery + preview ----------------------------------------------------
 
     def publish_discovery(self) -> None:
@@ -714,6 +725,8 @@ class ScopeWorker:
         prefix = self._settings.discovery_prefix
         for entity in ENTITIES:
             topic = f"{prefix}/{entity.component}/{self._device_id}/{entity.key}/config"
+            if not self._publish_if_supported(topic, entity.key):
+                continue
             payload = discovery_payload(
                 entity,
                 device_block=block,
@@ -727,11 +740,7 @@ class ScopeWorker:
         # the ``control`` dispatch module imported at the top.
         for control_entity in CONTROL_ENTITIES:
             topic = f"{prefix}/{control_entity.component}/{self._device_id}/{control_entity.key}/config"
-            supported = supports_control(control_entity.key, self._model)
-            if supported is None:
-                continue                    # model not known yet: leave it as it is
-            if not supported:
-                self._mqtt.publish(topic, "", retain=True)   # removes the entity from HA
+            if not self._publish_if_supported(topic, control_entity.key):
                 continue
             payload = control_discovery_payload(
                 control_entity,

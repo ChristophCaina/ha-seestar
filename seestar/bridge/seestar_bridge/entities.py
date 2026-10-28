@@ -113,15 +113,20 @@ def has_wide_camera(model: Any) -> bool:
     return family == "S30" or (family == "S50" and is_pro)
 
 
-#: Control entities that only exist on some models: key -> predicate on the
-#: reported ``product_model``. Until the model is known they are left as they
-#: are (neither published nor removed), so a restart never makes them flicker.
-MODEL_SPECIFIC_CONTROLS = {"wide_cam": has_wide_camera}
+#: Entities (sensors and controls) that only exist on some models: key ->
+#: predicate on the reported ``product_model``. Until the model is known they
+#: are left as they are (neither published nor removed), so a restart never
+#: makes them flicker. The wide-field sensors read the SecondView event of the
+#: wide-angle camera, which an S50 never sends.
+MODEL_SPECIFIC = {
+    key: has_wide_camera
+    for key in ("wide_cam", "wide_target", "wide_state", "wide_mode", "wide_gain", "wide_lp")
+}
 
 
-def supports_control(key: str, model: Any) -> bool | None:
+def supports_entity(key: str, model: Any) -> bool | None:
     """True/False once ``model`` is known; None while it is still unknown."""
-    predicate = MODEL_SPECIFIC_CONTROLS.get(key)
+    predicate = MODEL_SPECIFIC.get(key)
     if predicate is None:
         return True
     if not model:

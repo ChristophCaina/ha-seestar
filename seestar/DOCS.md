@@ -274,8 +274,9 @@ against seestar_alp:
 - **Wide camera is S30-series only.** The `wide_cam` setting exists on the
   S30/S30 Pro; seestar_alp's own web UI additionally hides the toggle behind an
   experimental flag. The add-on reads each scope's `product_model` and only
-  creates the switch on models with a wide-angle camera (S30, S30 Pro,
-  S50 Pro); on an S50 it is removed once the model has been reported.
+  creates the switch (and the Wide-field sensors) on models with a wide-angle
+  camera (S30, S30 Pro, S50 Pro); on an S50 they are removed once the model
+  has been reported.
 - **Record video only records during a planetary live session.** Outside one,
   the scope refuses `start_record_avi` in-band and the refusal shows as
   `error: …` on **Last command result**.
