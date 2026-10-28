@@ -193,6 +193,7 @@ def subscribe_commands(mqtt_client, workers: list[ScopeWorker]) -> None:
 def main() -> None:
     """Compose the real pieces and run a worker thread per scope (blocks forever)."""
     settings = load_settings(_options(), dict(os.environ))
+    _log.info("gate_availability: %s", "on - locked controls read unavailable" if settings.gate_availability else "off")
     # Honor the operator's log_level option. The HA-convention levels that have no
     # stdlib name (trace/notice/fatal) are mapped to their nearest real level by
     # python_log_level, so every config.yaml enum value takes effect end-to-end
