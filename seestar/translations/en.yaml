@@ -22,6 +22,12 @@ configuration:
     description: >-
       External mode only: the port your seestar_alp serves its /config page on, used
       to look up each scope's address for the preview. Default 5432.
+  proxy_external_webui:
+    name: Proxy the external web UI
+    description: >-
+      External mode only: open your own seestar_alp's web UI in the Home Assistant
+      sidebar (and the companion app, also remotely) through ingress, including the
+      live view. Off = show a page that links to it instead.
   mqtt_host:
     name: MQTT host
     description: >-

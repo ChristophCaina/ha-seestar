@@ -99,6 +99,12 @@ if [ "${has_alpaca_host}" = true ]; then
     external_webui_port="$(bashio::config 'alpaca_webui_port' "${WEBUI_PORT}")"
     write_env 'SEESTAR_EXTERNAL_WEBUI_URL' \
         "http://${external_webui_host}:${external_webui_port}"
+    # The imaging server (live /vid, /live/status SSE) on the same host; the
+    # ingress proxy serves it under /_imaging/ so the browser never needs a
+    # direct (mixed-content, LAN-only) connection to it.
+    external_imaging_port="$(bashio::config 'imaging_port' "${IMAGING_PORT}")"
+    write_env 'SEESTAR_EXTERNAL_IMAGING_URL' \
+        "http://${external_webui_host}:${external_imaging_port}"
     bashio::log.info \
         "External seestar_alp web UI at http://${external_webui_host}:${external_webui_port}."
     exit 0

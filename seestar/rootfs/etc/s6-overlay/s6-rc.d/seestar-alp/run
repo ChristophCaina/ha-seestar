@@ -1,8 +1,9 @@
 #!/command/with-contenv bashio
 # shellcheck shell=bash
 # ==============================================================================
-# seestar-alp longrun — the bundled Alpaca driver (bundled mode) OR the ingress
-# info page (external mode).
+# seestar-alp longrun — the bundled Alpaca driver (bundled mode) OR, in external
+# mode, a reverse proxy to the operator's own seestar_alp web UI
+# (proxy_external_webui, default) or the ingress info page linking to it.
 #
 # Conditional: the real seestar_alp runs ONLY in bundled mode (alpaca_host
 # blank). In external mode the operator reuses their own seestar_alp, so nothing
@@ -15,6 +16,12 @@
 # ==============================================================================
 
 if bashio::config.has_value 'alpaca_host'; then
+    if bashio::config.true 'proxy_external_webui'; then
+        bashio::log.info \
+            "External Alpaca driver configured; proxying its web UI through ingress."
+        export PYTHONPATH="/app/bridge${PYTHONPATH:+:${PYTHONPATH}}"
+        exec python3 -m seestar_bridge.ingress_proxy
+    fi
     bashio::log.info \
         "External Alpaca driver configured; serving the ingress info page."
     exec /etc/s6-overlay/scripts/ingress-info-server

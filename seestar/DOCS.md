@@ -106,7 +106,7 @@ where that driver runs with the single `alpaca_host` option:
 |---|---|---|
 | seestar_alp | runs **inside this app** | you run it yourself elsewhere |
 | Scope list | the app's **Telescopes** (`scopes`) option seeds it | already configured on your instance |
-| Web UI | the seestar_alp **SSC web UI**, in the HA sidebar (ingress) | open your own instance's UI |
+| Web UI | the seestar_alp **SSC web UI**, in the HA sidebar (ingress) | your own instance's UI, **proxied** into the HA sidebar (ingress) — or a link to it with `proxy_external_webui: false` |
 | Preview address | read from the bundled `config.toml` | read from your instance's `/config.json` (or `/config` page) |
 
 - **Bundled** (most users): leave `alpaca_host` blank and list your scope(s) under
@@ -126,6 +126,7 @@ Setting **both** `scopes` and `alpaca_host` is rejected at startup; so is settin
 | `alpaca_host` | string | `""` | Blank = run the bundled driver. Set to `host:port` of your own seestar_alp to reuse it (and leave `scopes` empty). |
 | `alpaca_webui_port` | port | `5432` | **External mode only.** The port your seestar_alp serves its config on, used to look up each scope's address for the preview. |
 | `imaging_port` | port | `7556` | Port of seestar_alp's imaging server on the Alpaca host, where the Live view camera grabs its `/vid` MJPEG frames. Change only for an external seestar_alp bound to a non-stock imaging port. |
+| `proxy_external_webui` | bool | `true` | **External mode only.** Serve your seestar_alp's web UI (and its live view) through ingress, so it opens in the HA sidebar and the companion app — also remotely, without exposing the seestar_alp host. Off = the panel shows a page linking to `http://<alpaca_host>:<alpaca_webui_port>` instead. |
 | `mqtt_host` | string | `""` | Blank = use the Mosquitto add-on via the Supervisor. Set to override with another broker. |
 | `mqtt_port` | port | `1883` | Ignored while `mqtt_host` is blank (the Supervisor service supplies the port). Set `8883` for a TLS broker when overriding `mqtt_host`. |
 | `mqtt_username` | string | `""` | Broker username. Leave blank with the Mosquitto add-on. |
@@ -413,11 +414,16 @@ These are deliberate v1 limitations, documented so they don't surprise you:
 3. **The base image is pinned by tag, not by digest.** The Dockerfile builds from
    `ghcr.io/home-assistant/<arch>-base-debian:trixie-2026.06.1` (a tag), so a
    rebuild could pick up an updated base under the same tag.
-4. **The bundled web UI / ingress is live in BUNDLED mode only.** The HA sidebar
-   ingress surfaces the *bundled* seestar_alp SSC web UI. In **external** mode the
-   app does not start a driver, so the **Open Web UI** panel instead shows a small
-   info page that links out to your own seestar_alp instance's web UI (at
-   `alpaca_host`'s host on `alpaca_webui_port`) — open it directly there.
+4. **In external mode the web UI is proxied, with URL rewriting.** With
+   `proxy_external_webui` on (default), the **Open Web UI** panel reverse-proxies
+   your seestar_alp at `alpaca_host`'s host on `alpaca_webui_port`, and its
+   imaging server (`imaging_port`: live `/vid`, `/live/status`) under
+   `/_imaging/`. seestar_alp's pages use root-relative and absolute
+   `http://host:7556` URLs, so the proxy rewrites HTML, JavaScript and CSS
+   responses onto the ingress path; streams pass through unbuffered. A page that
+   assembles URLs some other way may still escape the prefix — open your
+   instance directly then, or set `proxy_external_webui: false` to get the
+   previous link-out info page.
 
    <a id="renaming-a-scope-creates-a-new-device"></a>
 

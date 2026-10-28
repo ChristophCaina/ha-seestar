@@ -46,6 +46,7 @@ options:
   alpaca_host: ""
   alpaca_webui_port: 5432
   imaging_port: 7556
+  proxy_external_webui: true
   mqtt_host: ""
   mqtt_port: 1883
   mqtt_username: ""
@@ -68,6 +69,8 @@ schema:
   alpaca_webui_port: port
   # seestar_alp's imaging server on the Alpaca host (the live /vid camera).
   imaging_port: port
+  # External mode: serve your seestar_alp web UI through ingress (sidebar/app).
+  proxy_external_webui: bool
   # MQTT overrides; blank/0 = use the Supervisor (Mosquitto add-on) service.
   mqtt_host: str?
   mqtt_port: port
