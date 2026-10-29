@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Current operation** and **Last operation result** sensors: what the scope
+  is doing right now (goto with attempt count, unfold/park, search, focus,
+  stacking, live view) and how its last operation ended, with the firmware's
+  error text — so a remote operator sees *done* or *failed*, not only
+  *accepted*.
 - Phase-2 control layer: safety-gated MQTT command entities per scope (imaging
   sessions, goto, saved-plan execution, settings, power) behind two default-off
   safety switches, with every dispatch outcome surfaced on a **Last command

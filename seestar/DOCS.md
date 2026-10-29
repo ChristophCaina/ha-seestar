@@ -203,6 +203,19 @@ sensor shows `ok: …` for accepted commands and `error: …` when the scope its
 rejected or failed one — it is the first place to look when a button "did
 nothing".
 
+*Accepted* is not *done*: a goto can be accepted and still fail on the scope.
+Two sensors follow what the scope then actually does, from its own events:
+
+- **Current operation** — what runs right now, e.g. `Goto (attempt 3) – M 31`,
+  `Move to horizon`, `Sun/Moon search`, `Stacking – M 31`, `Live view (moon)`
+  or `Idle`.
+- **Last operation result** — how the last finished operation ended, with the
+  firmware's own error text, e.g. `Goto: fail – mount goto failed` or
+  `Move to horizon: complete (17 s)`.
+
+Watch these (or wait on them in an automation) when you operate the scope
+remotely.
+
 ### Control entities
 
 All controls are per-scope: arming or commanding one telescope never affects
