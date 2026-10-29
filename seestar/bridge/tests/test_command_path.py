@@ -454,7 +454,7 @@ def test_successful_command_publishes_ok_to_result_topic():
     finally:
         stub.shutdown()
     result = fake_mqtt.retained_state(workers[0].command_result_topic)
-    assert result == "ok: start_stack"
+    assert result == "accepted: start_stack"
 
 
 def test_command_result_sensor_discovery_is_published():

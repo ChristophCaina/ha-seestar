@@ -199,7 +199,8 @@ Each scope gets two safety switches, **both OFF by default**:
 A refused command is never silent: the refusal and its reason are published to
 the **Last command result** sensor, e.g.
 `refused: goto: controls are disabled (arm 'Controls enabled' first)`. The same
-sensor shows `ok: …` for accepted commands and `error: …` when the scope itself
+sensor shows `accepted: …` for commands seestar_alp took on (accepted, not yet
+done — the scope may still fail them) and `error: …` when the scope itself
 rejected or failed one — it is the first place to look when a button "did
 nothing".
 

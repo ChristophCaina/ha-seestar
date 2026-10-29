@@ -26,6 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING:** **Last command result** reads `accepted: <control>` instead of
+  `ok: <control>` for a dispatched command. It only ever meant "seestar_alp took
+  the command", not "it worked", and `ok` read as success. Automations or
+  templates matching the `ok:` prefix must be updated (`refused:` / `error:`
+  are unchanged).
 - Last-known telemetry survives driver and add-on restarts; unknown values stay
   honestly unknown. The bridge merges each poll cycle into a persistent
   per-scope snapshot (seeded once from its own retained MQTT state topic at
