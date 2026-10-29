@@ -213,6 +213,11 @@ ENTITIES: list[Entity] = [
     Entity("sensor", "solar_scan_state", "Sun/Moon search", None, None, None, "mdi:weather-sunny"),
     Entity("sensor", "mount_mode", "Mount mode", None, None, None, "mdi:axis"),
     Entity("sensor", "last_alert", "Last alert", None, None, None, "mdi:alert-circle"),
+    # What the scope is doing right now, and how its last finished operation
+    # ended (with the firmware's error text) — the "done/failed" counterpart of
+    # Last command result, which only says whether a command was accepted.
+    Entity("sensor", "current_operation", "Current operation", None, None, None, "mdi:progress-clock"),
+    Entity("sensor", "last_operation_result", "Last operation result", None, None, None, "mdi:clipboard-check-outline"),
     Entity("binary_sensor", "connected", "Connected", None, "connectivity", None, None),
     # Health (mostly best-effort via get_device_state)
     Entity("sensor", "temperature", "Sensor temperature", "°C", "temperature", "measurement", "mdi:thermometer"),

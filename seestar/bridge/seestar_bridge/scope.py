@@ -141,6 +141,27 @@ _CONNECTED_KEY = "connected"
 #: exactly what the dashboard should show across a driver restart.
 _CYCLE_FRESH_KEYS = frozenset({_CONNECTED_KEY})
 
+# --- operation status (Current operation / Last operation result) ---------------
+#: Short firmware operations, event name -> label. Each reports state
+#: start/working -> complete/fail/cancel; the newest one wins.
+_OPERATION_EVENTS = {
+    "ScopeMoveToHorizon": "Move to horizon",
+    "ScopeHome": "Park",
+    "AutoGoto": "Goto",
+    "AutoFocus": "Auto-focus",
+    "PlateSolve": "Plate solve",
+    "DarkLibrary": "Dark frames",
+    "Initialise": "Startup",
+    "3PPA": "Polar alignment",
+}
+#: Firmware Sun/Moon search events share this prefix (ScanSun, ...).
+_OPERATION_SCAN_PREFIX = "Scan"
+_OPERATION_SCAN_LABEL = "Sun/Moon search"
+_OPERATION_RUNNING = ("start", "working")
+_OPERATION_DONE = ("complete", "fail", "cancel")
+_OPERATION_IDLE = "Idle"
+_OPERATION_TEXT_MAX = 255
+
 #: The known entity catalog's keys — the only keys the startup seed may
 #: restore from the retained state topic (defensive against leftovers from an
 #: older schema still retained on the broker).
@@ -544,7 +565,72 @@ class ScopeWorker:
         self._extract_detections(state, g)
         self._extract_misc(state, g)
         self._extract_arm_and_scan(state, event_state)
+        self._extract_operations(state, event_state)
         return state
+
+    @staticmethod
+    def _extract_operations(state, event_state):
+        """Current operation + last finished operation from the firmware events.
+
+        A short operation (goto, park, unfold, focus, search ...) in progress
+        wins; otherwise a running stack, then a running live view; otherwise
+        Idle. The result is the newest short operation (or stack) that ended,
+        with its duration or the firmware's error text. Only produced from a
+        non-empty event snapshot, so an unreachable cycle keeps the last value.
+        """
+        if not event_state:
+            return
+
+        def stamp(event):
+            try:
+                return float(event.get("Timestamp"))
+            except (TypeError, ValueError):
+                return float("-inf")
+
+        ops = []                                    # (timestamp, label, event)
+        for name, event in event_state.items():
+            if not isinstance(event, dict) or not isinstance(name, str):
+                continue
+            if name in _OPERATION_EVENTS:
+                label = _OPERATION_EVENTS[name]
+            elif name.startswith(_OPERATION_SCAN_PREFIX):
+                label = _OPERATION_SCAN_LABEL
+            elif name == "Stack":
+                label = "Stacking"
+            else:
+                continue
+            ops.append((stamp(event), label, event))
+        ops.sort(key=lambda op: op[0], reverse=True)
+
+        view = event_state.get("View") if isinstance(event_state.get("View"), dict) else {}
+        target = view.get("target_name")
+        running = [op for op in ops if op[2].get("state") in _OPERATION_RUNNING]
+        short = [op for op in running if op[1] != "Stacking"]
+        if short:
+            _, label, event = short[0]
+            text = label
+            if label == "Goto":
+                if event.get("count"):
+                    text += f" (attempt {event['count']})"
+                if target:
+                    text += f" – {target}"
+        elif running:
+            text = "Stacking" + (f" – {target}" if target else "")
+        elif view.get("state") in _OPERATION_RUNNING:
+            text = f"Live view ({view.get('mode') or '?'})" + (f" – {target}" if target else "")
+        else:
+            text = _OPERATION_IDLE
+        state["current_operation"] = text[:_OPERATION_TEXT_MAX]
+
+        done = [op for op in ops if op[2].get("state") in _OPERATION_DONE]
+        if done:
+            _, label, event = done[0]
+            text = f"{label}: {event['state']}"
+            if event.get("error"):
+                text += f" – {event['error']}"
+            elif event["state"] == "complete" and isinstance(event.get("lapse_ms"), (int, float)):
+                text += f" ({round(event['lapse_ms'] / 1000)} s)"
+            state["last_operation_result"] = text[:_OPERATION_TEXT_MAX]
 
     @staticmethod
     def _extract_arm_and_scan(state, event_state):

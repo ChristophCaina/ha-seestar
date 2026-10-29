@@ -1023,3 +1023,53 @@ def test_goto_planet_skips_the_lookup_while_locked():
                          mqtt_client=_FakeMqtt(), scope_http_base=None)
     worker._lookup_planet = lambda planet: pytest.fail("looked up while controls are locked")
     worker.handle_command(f"{worker.base_topic}/cmd/goto_planet", "PRESS")
+# ------------------------------------------------------------- operation status
+def _ops_worker():
+    return ScopeWorker(alpaca=_StubAlpaca(), device=DEVICE, settings=None,
+                       mqtt_client=_FakeMqtt(), scope_http_base=None)
+
+
+def test_failed_goto_shows_attempts_and_the_firmware_error():
+    # Shapes from a real S50 (firmware 9.75) log: AutoGoto retrying while the arm
+    # was folded, then giving up with "mount goto failed".
+    state = _ops_worker().build_state({
+        "View": {"Timestamp": "12624.4", "state": "working", "mode": "star", "target_name": "Moon"},
+        "AutoGoto": {"Timestamp": "12636.1", "state": "working", "count": 4},
+        "ScopeHome": {"Timestamp": "12000.0", "state": "complete", "lapse_ms": 18643, "close": True},
+    })
+    assert state["current_operation"] == "Goto (attempt 4) – Moon"
+    assert state["last_operation_result"] == "Park: complete (19 s)"
+
+    state = _ops_worker().build_state({
+        "View": {"Timestamp": "12624.4", "state": "working", "mode": "star", "target_name": "Moon"},
+        "AutoGoto": {"Timestamp": "12645.9", "state": "fail", "error": "mount goto failed",
+                     "code": 501, "count": 7},
+    })
+    assert state["current_operation"] == "Live view (star) – Moon"
+    assert state["last_operation_result"] == "Goto: fail – mount goto failed"
+
+
+def test_move_to_horizon_then_idle():
+    state = _ops_worker().build_state({
+        "ScopeMoveToHorizon": {"Timestamp": "13407.2", "state": "working", "close": True}})
+    assert state["current_operation"] == "Move to horizon"
+    state = _ops_worker().build_state({
+        "ScopeMoveToHorizon": {"Timestamp": "13424.1", "state": "complete",
+                               "lapse_ms": 16797, "close": False}})
+    assert state["current_operation"] == "Idle"
+    assert state["last_operation_result"] == "Move to horizon: complete (17 s)"
+
+
+def test_scan_events_and_stacking():
+    state = _ops_worker().build_state({
+        "ScanSun": {"Timestamp": "20.0", "state": "working"},
+        "Stack": {"Timestamp": "10.0", "state": "working"},
+    })
+    assert state["current_operation"] == "Sun/Moon search"
+    state = _ops_worker().build_state({"Stack": {"Timestamp": "10.0", "state": "working"},
+                                       "View": {"state": "working", "target_name": "M 31"}})
+    assert state["current_operation"] == "Stacking – M 31"
+
+
+def test_empty_snapshot_keeps_the_last_operation():
+    assert "current_operation" not in _ops_worker().build_state({})

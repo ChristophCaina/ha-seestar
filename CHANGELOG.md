@@ -21,6 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with a **Planet** select (current position looked up in seestar_alp). New
   sensors **Arm closed** and **Sun/Moon search** report the arm's fold state and
   the search progress, so automations can wait on them.
+- **Current operation** and **Last operation result** sensors: what the scope
+  is doing right now (goto with attempt count, unfold/park, search, focus,
+  stacking, live view) and how its last operation ended, with the firmware's
+  error text — so a remote operator sees *done* or *failed*, not only
+  *accepted*.
 - Phase-2 control layer: safety-gated MQTT command entities per scope (imaging
   sessions, goto, saved-plan execution, settings, power) behind two default-off
   safety switches, with every dispatch outcome surfaced on a **Last command
