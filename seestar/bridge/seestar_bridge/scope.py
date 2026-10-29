@@ -1022,7 +1022,10 @@ class ScopeWorker:
         a blocked/failed command in HA; the dispatcher's log line is not the only
         trace.
         """
-        stored: dict[str, Any] = dict(self._stored_inputs)
+        stored: dict[str, Any] = {
+            **self._stored_inputs,
+            control.PLAN_ACTIVE_KEY: bool(self._published_state.get("plan_active")),
+        }
         if key == "goto_planet" and self._controls_enabled:
             # Look the CURRENT position up right before the slew (read-only).
             # On failure the coordinates stay absent and the builder refuses.
