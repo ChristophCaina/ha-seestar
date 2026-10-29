@@ -43,6 +43,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING:** **Last command result** reads `accepted: <control>` instead of
+  `ok: <control>` for a dispatched command. It only ever meant "seestar_alp took
+  the command", not "it worked", and `ok` read as success. Automations or
+  templates matching the `ok:` prefix must be updated (`refused:` / `error:`
+  are unchanged).
 - Model-aware entities: the add-on reads each scope's `product_model` from
   `get_device_state`, names the HA device after it (instead of a fixed
   "Seestar S30 Pro") and only creates the **Wide camera** switch and the

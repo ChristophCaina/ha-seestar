@@ -393,6 +393,12 @@ def parse_planet_position(text: str) -> tuple[float, float] | None:
     return round(ra, 6), round(dec, 6)
 
 
+#: How each dispatch outcome reads on the Last command result sensor. An OK
+#: dispatch only means seestar_alp ACCEPTED the command — whether it then
+#: succeeded on the scope is a separate question — so it reads "accepted".
+_RESULT_LABELS = {DispatchStatus.OK: "accepted"}
+
+
 def _nav(obj: Any, *path: Any, default: Any = None) -> Any:
     """Safely navigate nested dict/list by keys/indices (Phase-1 ``_nav``)."""
     for key in path:
@@ -1131,7 +1137,8 @@ class ScopeWorker:
                 # the echo may not be what the scope ends up doing: let the next
                 # reading re-mirror the switch even if it equals the previous one
                 self._switch_synced.pop(key, None)
-        self._publish_command_result(result.status.value, result.reason or key)
+        self._publish_command_result(_RESULT_LABELS.get(result.status, result.status.value),
+                                     result.reason or key)
 
     def _lookup_planet(self, planet: str) -> tuple[float, float] | None:
         """A planet's current (JNow) RA hours / Dec degrees from seestar_alp, or None."""
