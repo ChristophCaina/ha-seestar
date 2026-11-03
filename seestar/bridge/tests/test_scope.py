@@ -803,3 +803,272 @@ def test_fetch_preview_downscales_valid_jpeg():
     # Downscaled to <= preview_max_px on the long edge.
     decoded = pil.open(io.BytesIO(out))
     assert max(decoded.size) <= 1280
+
+
+def test_device_state_storage_used_percent():
+    vol = {"name": "emmc", "state": "mounted", "totalMB": 51854, "freeMB": 46907, "used_percent": 21}
+    assert ScopeWorker.extract_device_state({"storage": {"storage_volume": [vol]}})["disk_used_pct"] == 21
+
+
+def test_device_state_storage_computed_from_free_and_total():
+    vol = {"state": "mounted", "totalMB": 50000, "freeMB": 12500}
+    assert ScopeWorker.extract_device_state({"storage": {"storage_volume": [vol]}})["disk_used_pct"] == 75
+
+
+def test_device_state_storage_ignored_in_usb_mode():
+    vol = {"state": "connected", "totalMB": 50000, "freeMB": 0}
+    assert "disk_used_pct" not in ScopeWorker.extract_device_state({"storage": {"storage_volume": [vol]}})
+    assert "disk_used_pct" not in ScopeWorker.extract_device_state({"storage": {}})
+
+
+class _RecordingMqtt:
+    def __init__(self):
+        self.published = []
+
+    def publish(self, topic, payload, retain=False):
+        self.published.append((topic, payload))
+
+
+_GateMqtt = _RecordingMqtt
+
+
+def test_switch_states_follow_the_scopes_own_reading():
+    """The heater/tracking switches mirror what the scope reports, only on change."""
+    mqtt = _RecordingMqtt()
+    worker = ScopeWorker(alpaca=_StubAlpaca(), device=DEVICE, settings=None,
+                         mqtt_client=mqtt, scope_http_base=None)
+    worker._sync_switch_states({"dew_heater": False, "tracking": True})
+    topics = dict(mqtt.published)
+    heater = [t for t in topics if t.endswith("dew_heater_set/state") or "dew_heater_set" in t]
+    tracking = [t for t in topics if "tracking_set" in t]
+    assert heater and topics[heater[0]] == "OFF"
+    assert tracking and topics[tracking[0]] == "ON"
+
+    mqtt.published.clear()
+    worker._sync_switch_states({"dew_heater": False})        # unchanged -> no publish
+    worker._sync_switch_states({})                           # not observed -> no publish
+    assert mqtt.published == []
+    worker._sync_switch_states({"dew_heater": True})
+    assert [p for _, p in mqtt.published] == ["ON"]
+
+
+def test_switch_resyncs_after_a_command_echo():
+    """Command echoed ON, scope still reports OFF -> the switch goes back to OFF."""
+    mqtt = _RecordingMqtt()
+    worker = ScopeWorker(alpaca=_StubAlpaca(), device=DEVICE, settings=None,
+                         mqtt_client=mqtt, scope_http_base=None)
+    worker._sync_switch_states({"dew_heater": False})
+    worker._switch_synced.pop("dew_heater_set", None)      # what a dispatched echo does
+    mqtt.published.clear()
+    worker._sync_switch_states({"dew_heater": False})
+    assert [p for t, p in mqtt.published if "dew_heater_set" in t] == ["OFF"]
+
+
+class _GateSettings:
+    discovery_prefix = "homeassistant"
+    gate_availability = True
+
+
+def _config(mqtt, key):
+    for topic, payload in mqtt.published:
+        if topic.endswith(f"/{key}/config"):
+            return json.loads(payload)
+    raise AssertionError(key)
+
+
+def test_gate_availability_marks_gated_commands():
+    mqtt = _GateMqtt()
+    worker = ScopeWorker(alpaca=_StubAlpaca(), device=DEVICE, settings=_GateSettings(),
+                         mqtt_client=mqtt, scope_http_base=None,
+                         bridge_availability_topic="seestar/bridge/availability")
+    worker.publish_discovery()
+    avail = lambda key: [a["topic"] for a in _config(mqtt, key)["availability"]]  # noqa: E731
+    assert avail("goto")[-1].endswith("/gate/controls")
+    assert avail("park")[-1].endswith("/gate/power")
+    assert not any("/gate/" in t for t in avail("controls_enabled"))
+    assert not any("/gate/" in t for t in avail("goto_target"))
+    gates = {t: p for t, p in mqtt.published if "/gate/" in t}
+    assert set(gates.values()) == {"offline"}          # fail-safe: closed at start
+
+    mqtt.published.clear()
+    worker.handle_command(f"{worker.base_topic}/cmd/controls_enabled", "ON")
+    gates = {t.rsplit("/", 1)[1]: p for t, p in mqtt.published if "/gate/" in t}
+    assert gates == {"controls": "online", "power": "offline"}
+
+
+def test_gate_availability_off_by_default():
+    mqtt = _GateMqtt()
+
+    class _S(_GateSettings):
+        gate_availability = False
+
+    worker = ScopeWorker(alpaca=_StubAlpaca(), device=DEVICE, settings=_S(),
+                         mqtt_client=mqtt, scope_http_base=None,
+                         bridge_availability_topic="seestar/bridge/availability")
+    worker.publish_discovery()
+    assert not any("/gate/" in t for t, _ in mqtt.published)
+    assert not any("/gate/" in a["topic"] for a in _config(mqtt, "goto")["availability"])
+
+def test_wide_camera_switch_follows_the_setting():
+    """S30 series: the wide-camera switch mirrors Setting.wide_cam."""
+    mqtt = _RecordingMqtt()
+    worker = ScopeWorker(alpaca=_StubAlpaca(), device=DEVICE, settings=None,
+                         mqtt_client=mqtt, scope_http_base=None)
+    state = {}
+    worker._extract_cameras(state, lambda *path: True if path == ("Setting", "wide_cam") else None)
+    assert state["active_camera"] == "Wide-field"
+    worker._sync_switch_states(state)
+    assert [p for t, p in mqtt.published if t.endswith("wide_cam/state")] == ["ON"]
+
+
+def test_seed_gives_switches_their_last_known_state(monkeypatch):
+    """A never-commanded switch reads the seeded reading, not 'unknown', after a restart."""
+    retained = json.dumps({"tracking": False, "dew_heater": True}).encode()
+    mqtt_client = _SeedableFakeMqtt(retained=retained)
+    _run_cycles(_ScriptedAlpaca(event_states=[{}], connected=False),
+                mqtt_client, monkeypatch, cycles=1)
+    published = {m[0]: m[1] for m in mqtt_client.published}
+    assert [p for t, p in published.items() if "tracking_set" in t] == ["OFF"]
+    assert [p for t, p in published.items() if "dew_heater_set" in t] == ["ON"]
+
+# --------------------------------------------------------- model-aware controls
+def _model_worker():
+    mqtt = _FakeMqtt()
+    worker = ScopeWorker(alpaca=_StubAlpaca(), device=DEVICE, settings=_cycle_settings(),
+                         mqtt_client=mqtt, scope_http_base=None)
+    return worker, mqtt
+
+
+def _configs(mqtt, key):
+    return [(p, r) for t, p, r in mqtt.published if t.endswith(f"/{key}/config")]
+
+
+def test_wide_camera_left_alone_until_the_model_is_known():
+    worker, mqtt = _model_worker()
+    worker.publish_discovery()
+    assert _configs(mqtt, "wide_cam") == []          # neither published nor removed
+    assert _configs(mqtt, "wide_gain") == []
+    assert _configs(mqtt, "dew_heater_set")         # the rest is published as usual
+
+
+def test_s50_removes_the_wide_camera_and_names_the_model():
+    worker, mqtt = _model_worker()
+    worker._note_model({"device": {"product_model": "Seestar S50"}})
+    assert _configs(mqtt, "wide_cam") == [("", True)]
+    assert _configs(mqtt, "wide_state") == [("", True)]       # wide-field sensors too
+    assert _configs(mqtt, "telephoto_state")
+    heater = json.loads(_configs(mqtt, "dew_heater_set")[-1][0])
+    assert heater["device"]["model"] == "Seestar S50"
+    mqtt.published.clear()
+    worker._note_model({"device": {"product_model": "Seestar S50"}})   # unchanged -> no re-publish
+    assert mqtt.published == []
+
+
+def test_s30_pro_gets_the_wide_camera():
+    worker, mqtt = _model_worker()
+    worker._note_model({"device": {"product_model": "Seestar S30P"}})
+    payload, retain = _configs(mqtt, "wide_cam")[-1]
+    assert retain and json.loads(payload)["name"] == "Wide camera"
+
+
+def test_missing_model_changes_nothing():
+    worker, mqtt = _model_worker()
+    for bad in (None, {}, {"device": {}}, {"device": {"product_model": "  "}}):
+        worker._note_model(bad)
+    assert mqtt.published == []
+# ------------------------------------------------------------ arm + solar system
+def test_arm_closed_follows_the_newest_arm_event():
+    worker = ScopeWorker(alpaca=_StubAlpaca(), device=DEVICE, settings=None,
+                         mqtt_client=_FakeMqtt(), scope_http_base=None)
+    state = worker.build_state({
+        "ScopeHome": {"Timestamp": "12968.0", "state": "complete", "close": True},
+        "ScopeMoveToHorizon": {"Timestamp": "13424.1", "state": "complete", "close": False},
+        "ScanSun": {"Timestamp": "13500.0", "state": "working"},
+    })
+    assert state["arm_closed"] is False
+    assert state["solar_scan_state"] == "working"
+
+
+def test_arm_closed_from_device_state():
+    assert ScopeWorker.extract_device_state({"mount": {"close": True}})["arm_closed"] is True
+    assert "arm_closed" not in ScopeWorker.extract_device_state({"mount": {}})
+
+
+def test_parse_planet_position():
+    from seestar_bridge.scope import parse_planet_position
+    assert parse_planet_position("05h 18m 48.04s, +22deg 23' 10.8\"") == (5.313344, 22.386333)
+    assert parse_planet_position("22h 01m 02.00s, -11deg 05' 00.0\"") == (22.017222, -11.083333)
+    assert parse_planet_position("Internal Server Error") is None
+
+
+def test_goto_planet_uses_the_looked_up_position():
+    alpaca = _StubAlpaca()
+    alpaca.calls = []
+    alpaca.action = lambda name, params: alpaca.calls.append((name, params)) or {}
+    worker = ScopeWorker(alpaca=alpaca, device=DEVICE, settings=None, mqtt_client=_FakeMqtt(),
+                         scope_http_base=None)
+    looked_up = []
+    worker._lookup_planet = lambda planet: looked_up.append(planet) or (5.31, 22.39)
+    base = worker.base_topic
+    worker.handle_command(f"{base}/cmd/controls_enabled", "ON")
+    worker.handle_command(f"{base}/cmd/planet", "mars")
+    worker.handle_command(f"{base}/cmd/goto_planet", "PRESS")
+    assert looked_up == ["mars"]
+    assert alpaca.calls[-1][1]["params"]["target_ra_dec"] == [5.31, 22.39]
+
+
+def test_goto_planet_skips_the_lookup_while_locked():
+    worker = ScopeWorker(alpaca=_StubAlpaca(), device=DEVICE, settings=None,
+                         mqtt_client=_FakeMqtt(), scope_http_base=None)
+    worker._lookup_planet = lambda planet: pytest.fail("looked up while controls are locked")
+    worker.handle_command(f"{worker.base_topic}/cmd/goto_planet", "PRESS")
+# ------------------------------------------------------------- operation status
+def _ops_worker():
+    return ScopeWorker(alpaca=_StubAlpaca(), device=DEVICE, settings=None,
+                       mqtt_client=_FakeMqtt(), scope_http_base=None)
+
+
+def test_failed_goto_shows_attempts_and_the_firmware_error():
+    # Shapes from a real S50 (firmware 9.75) log: AutoGoto retrying while the arm
+    # was folded, then giving up with "mount goto failed".
+    state = _ops_worker().build_state({
+        "View": {"Timestamp": "12624.4", "state": "working", "mode": "star", "target_name": "Moon"},
+        "AutoGoto": {"Timestamp": "12636.1", "state": "working", "count": 4},
+        "ScopeHome": {"Timestamp": "12000.0", "state": "complete", "lapse_ms": 18643, "close": True},
+    })
+    assert state["current_operation"] == "Goto (attempt 4) – Moon"
+    assert state["last_operation_result"] == "Park: complete (19 s)"
+
+    state = _ops_worker().build_state({
+        "View": {"Timestamp": "12624.4", "state": "working", "mode": "star", "target_name": "Moon"},
+        "AutoGoto": {"Timestamp": "12645.9", "state": "fail", "error": "mount goto failed",
+                     "code": 501, "count": 7},
+    })
+    assert state["current_operation"] == "Live view (star) – Moon"
+    assert state["last_operation_result"] == "Goto: fail – mount goto failed"
+
+
+def test_move_to_horizon_then_idle():
+    state = _ops_worker().build_state({
+        "ScopeMoveToHorizon": {"Timestamp": "13407.2", "state": "working", "close": True}})
+    assert state["current_operation"] == "Move to horizon"
+    state = _ops_worker().build_state({
+        "ScopeMoveToHorizon": {"Timestamp": "13424.1", "state": "complete",
+                               "lapse_ms": 16797, "close": False}})
+    assert state["current_operation"] == "Idle"
+    assert state["last_operation_result"] == "Move to horizon: complete (17 s)"
+
+
+def test_scan_events_and_stacking():
+    state = _ops_worker().build_state({
+        "ScanSun": {"Timestamp": "20.0", "state": "working"},
+        "Stack": {"Timestamp": "10.0", "state": "working"},
+    })
+    assert state["current_operation"] == "Sun/Moon search"
+    state = _ops_worker().build_state({"Stack": {"Timestamp": "10.0", "state": "working"},
+                                       "View": {"state": "working", "target_name": "M 31"}})
+    assert state["current_operation"] == "Stacking – M 31"
+
+
+def test_empty_snapshot_keeps_the_last_operation():
+    assert "current_operation" not in _ops_worker().build_state({})

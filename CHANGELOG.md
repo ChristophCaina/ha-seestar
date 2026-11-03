@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Optional **Seestar** web-UI panel: the bridge reverse-proxies the seestar_alp
+  web UI (yours via `alpaca_host`, or the one found automatically) and its
+  imaging server (live view, status stream) through ingress, so it works in the
+  HA sidebar and the companion app — also remotely and behind HTTPS — when
+  seestar_alp runs outside Home Assistant. URLs in HTML/JS/CSS are rewritten onto
+  the ingress path. Option `proxy_external_webui` (default on; off = no panel).
+- Option `gate_availability`: gated command entities read *unavailable* while
+  **Controls enabled** (and, for power actions, **Allow power actions**) is off.
+- Solar-system controls: **Move to horizon** (unfold the arm), **Find Sun/Moon**
+  (start the moon/sun view and let the firmware find it), and **Goto planet**
+  with a **Planet** select (current position looked up in seestar_alp). New
+  sensors **Arm closed** and **Sun/Moon search** report the arm's fold state and
+  the search progress, so automations can wait on them.
+- **Current operation** and **Last operation result** sensors: what the scope
+  is doing right now (goto with attempt count, unfold/park, search, focus,
+  stacking, live view) and how its last operation ended, with the firmware's
+  error text — so a remote operator sees *done* or *failed*, not only
+  *accepted*.
 - Phase-2 control layer: safety-gated MQTT command entities per scope (imaging
   sessions, goto, saved-plan execution, settings, power) behind two default-off
   safety switches, with every dispatch outcome surfaced on a **Last command
@@ -38,7 +56,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [jaxzin/ha_seestar_alp](https://github.com/jaxzin/ha_seestar_alp), which now
   owns the scope list (`scopes`), the firmware 7.18+ key (`interop_pem`) and the
   SSC web UI. This app is the bridge only: the `scopes` and `interop_pem` options,
-  the ingress panel and the published imaging port are gone.
+  the bundled driver's ingress panel and the published imaging port are gone (the
+  optional proxied panel above replaces the panel for a seestar_alp outside HA).
 - With `alpaca_host` blank the bridge finds the driver itself: ASCOM Alpaca UDP
   discovery plus the Supervisor add-on list (`*_seestar_alp`), accepting only an
   endpoint whose telescope answers seestar_alp's `get_event_state`. Exactly one
@@ -50,6 +69,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING:** **Last command result** reads `accepted: <control>` instead of
+  `ok: <control>` for a dispatched command. It only ever meant "seestar_alp took
+  the command", not "it worked", and `ok` read as success. Automations or
+  templates matching the `ok:` prefix must be updated (`refused:` / `error:`
+  are unchanged).
+- Model-aware entities: the add-on reads each scope's `product_model` from
+  `get_device_state`, names the HA device after it (instead of a fixed
+  "Seestar S30 Pro") and only creates the **Wide camera** switch and the
+  wide-field sensors on models that have a wide-angle camera. Until the model
+  is reported they are left as they are, so a restart never makes them flicker.
 - Last-known telemetry survives driver and add-on restarts; unknown values stay
   honestly unknown. The bridge merges each poll cycle into a persistent
   per-scope snapshot (seeded once from its own retained MQTT state topic at
@@ -68,6 +97,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Storage used** is now also filled from `get_device_state` (mounted volume's
+  `used_percent`, or computed from free/total MB); it stayed unknown on firmware
+  that rarely or never sends the `DiskSpace` event (seen on 9.75).
+- **Dew heater**, **Tracking** and **Wide camera** switches follow the scope's
+  own reading instead of only echoing the last accepted command, so they no
+  longer show *on* while the heater is off (changed in the app, after a reboot,
+  or ignored). After an add-on restart they start from the last-known reading
+  instead of *unknown*.
+- **Stop** now also ends a live view, stack or goto started outside a plan
+  (`iscope_stop_view`); before, it only called `stop_scheduler` and failed with
+  "scheduler has already in complete state" when no plan was running.
 - External mode: the Open Web UI panel now shows a link to the external
   seestar_alp web UI instead of a 502.
 - The per-scope worker loop is now unkillable by a single cycle's exception: a

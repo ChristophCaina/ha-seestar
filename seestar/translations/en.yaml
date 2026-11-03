@@ -13,6 +13,19 @@ configuration:
     description: >-
       The port your seestar_alp serves its web UI on, where each scope's address
       for the preview is read. Default 5432; change only if you rebound it.
+  proxy_external_webui:
+    name: Web UI through ingress
+    description: >-
+      Open the seestar_alp web UI (yours via alpaca_host, or the one found
+      automatically) in the Home Assistant sidebar and the companion app, also
+      remotely, including the live view. Off = no web UI panel.
+  gate_availability:
+    name: Show locked controls as unavailable
+    description: >-
+      While Controls enabled is off, show the command entities (buttons, switches,
+      numbers) as unavailable instead of accepting and refusing presses. Power
+      actions also need Allow power actions. The two safety switches and the goto /
+      imaging-mode inputs stay available.
   mqtt_host:
     name: MQTT host
     description: >-

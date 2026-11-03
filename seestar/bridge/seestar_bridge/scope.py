@@ -29,6 +29,7 @@ import http.client
 import io
 import json
 import logging
+import re
 import threading
 import time
 import urllib.error
@@ -46,8 +47,10 @@ from .entities import (
     control_discovery_payload,
     control_state_topic,
     device_block,
+    gate_topic,
     discovery_payload,
     slug,
+    supports_entity,
 )
 
 _log = logging.getLogger(__name__)
@@ -138,6 +141,27 @@ _CONNECTED_KEY = "connected"
 #: exactly what the dashboard should show across a driver restart.
 _CYCLE_FRESH_KEYS = frozenset({_CONNECTED_KEY})
 
+# --- operation status (Current operation / Last operation result) ---------------
+#: Short firmware operations, event name -> label. Each reports state
+#: start/working -> complete/fail/cancel; the newest one wins.
+_OPERATION_EVENTS = {
+    "ScopeMoveToHorizon": "Move to horizon",
+    "ScopeHome": "Park",
+    "AutoGoto": "Goto",
+    "AutoFocus": "Auto-focus",
+    "PlateSolve": "Plate solve",
+    "DarkLibrary": "Dark frames",
+    "Initialise": "Startup",
+    "3PPA": "Polar alignment",
+}
+#: Firmware Sun/Moon search events share this prefix (ScanSun, ...).
+_OPERATION_SCAN_PREFIX = "Scan"
+_OPERATION_SCAN_LABEL = "Sun/Moon search"
+_OPERATION_RUNNING = ("start", "working")
+_OPERATION_DONE = ("complete", "fail", "cancel")
+_OPERATION_IDLE = "Idle"
+_OPERATION_TEXT_MAX = 255
+
 #: The known entity catalog's keys — the only keys the startup seed may
 #: restore from the retained state topic (defensive against leftovers from an
 #: older schema still retained on the broker).
@@ -225,7 +249,20 @@ _STATEFUL_DISPATCH_COMPONENTS = frozenset({
 _SESSION_START_KEYS = frozenset({
     "start_live_view", "start_stack", "run_plan",
     "goto", "start_mosaic", "start_spectra",
+    "find_sun_moon", "goto_planet",
 })
+
+#: Events whose ``close`` field reports the arm's fold state (park / unfold).
+_ARM_EVENTS = ("ScopeHome", "ScopeMoveToHorizon")
+#: Prefix of the firmware's Sun/Moon search events (ScanSun, ...).
+_SCAN_EVENT_PREFIX = "Scan"
+#: seestar_alp's planet-position lookup (its SSC "Search For: Planet").
+_PLANET_LOOKUP_PATH = "/getplanetcoordinates"
+_PLANET_LOOKUP_TIMEOUT_SEC = 15
+#: "05h 18m 48.04s, +22deg 23' 10.8\"" (skyfield Angle strings, JNow).
+_PLANET_POS_RE = re.compile(
+    r"""(?P<rh>\d+)h\s*(?P<rm>\d+)m\s*(?P<rs>[\d.]+)s\s*,\s*"""
+    r"""(?P<sign>[+-]?)(?P<dd>\d+)deg\s*(?P<dm>\d+)'\s*(?P<ds>[\d.]+)\"""")
 
 #: Dispatch-catalog keys whose OK dispatch ends (or stows/powers off) the
 #: session, clearing ownership.
@@ -342,6 +379,26 @@ def _mount_mode_label(equ_mode: bool) -> str:
     return _MOUNT_MODE_EQUATORIAL if equ_mode else _MOUNT_MODE_ALT_AZ
 
 
+def parse_planet_position(text: str) -> tuple[float, float] | None:
+    """Parse seestar_alp's planet lookup reply -> (RA hours, Dec degrees), or None."""
+    match = _PLANET_POS_RE.search(text or "")
+    if match is None:
+        return None
+    ra = (int(match["rh"]) + int(match["rm"]) / 60 + float(match["rs"]) / 3600)
+    dec = (int(match["dd"]) + int(match["dm"]) / 60 + float(match["ds"]) / 3600)
+    if match["sign"] == "-":
+        dec = -dec
+    if not (0 <= ra < 24 and -90 <= dec <= 90):
+        return None
+    return round(ra, 6), round(dec, 6)
+
+
+#: How each dispatch outcome reads on the Last command result sensor. An OK
+#: dispatch only means seestar_alp ACCEPTED the command — whether it then
+#: succeeded on the scope is a separate question — so it reads "accepted".
+_RESULT_LABELS = {DispatchStatus.OK: "accepted"}
+
+
 def _nav(obj: Any, *path: Any, default: Any = None) -> Any:
     """Safely navigate nested dict/list by keys/indices (Phase-1 ``_nav``)."""
     for key in path:
@@ -411,13 +468,19 @@ class ScopeWorker:
         # buttons' dispatch. Imaging mode starts at the documented default.
         self._stored_inputs: dict[str, str] = {
             control.IMAGING_MODE_KEY: control.DEFAULT_IMAGING_MODE,
+            control.PLANET_KEY: control.DEFAULT_PLANET,
         }
+        # Last switch state mirrored from the scope's own reading (_sync_switch_states).
+        self._switch_synced: dict[str, bool] = {}
         # Last-known merged state snapshot (see the _CYCLE_FRESH_KEYS block):
         # seeded once from our own retained state topic at startup, then merged
         # set-when-present each cycle so a driver restart's sparse events never
         # blank the published JSON. Only ever touched from the worker thread
         # (the seed runs at the top of run(), before the loop), so no lock.
         self._published_state: dict[str, Any] = {}
+        # The scope's own product_model (get_device_state), once reported:
+        # names the HA device model and decides the model-specific controls.
+        self._model: str | None = None
 
     # -- identity / topics ------------------------------------------------------
 
@@ -507,7 +570,98 @@ class ScopeWorker:
         self._extract_plan(state, g)
         self._extract_detections(state, g)
         self._extract_misc(state, g)
+        self._extract_arm_and_scan(state, event_state)
+        self._extract_operations(state, event_state)
         return state
+
+    @staticmethod
+    def _extract_operations(state, event_state):
+        """Current operation + last finished operation from the firmware events.
+
+        A short operation (goto, park, unfold, focus, search ...) in progress
+        wins; otherwise a running stack, then a running live view; otherwise
+        Idle. The result is the newest short operation (or stack) that ended,
+        with its duration or the firmware's error text. Only produced from a
+        non-empty event snapshot, so an unreachable cycle keeps the last value.
+        """
+        if not event_state:
+            return
+
+        def stamp(event):
+            try:
+                return float(event.get("Timestamp"))
+            except (TypeError, ValueError):
+                return float("-inf")
+
+        ops = []                                    # (timestamp, label, event)
+        for name, event in event_state.items():
+            if not isinstance(event, dict) or not isinstance(name, str):
+                continue
+            if name in _OPERATION_EVENTS:
+                label = _OPERATION_EVENTS[name]
+            elif name.startswith(_OPERATION_SCAN_PREFIX):
+                label = _OPERATION_SCAN_LABEL
+            elif name == "Stack":
+                label = "Stacking"
+            else:
+                continue
+            ops.append((stamp(event), label, event))
+        ops.sort(key=lambda op: op[0], reverse=True)
+
+        view = event_state.get("View") if isinstance(event_state.get("View"), dict) else {}
+        target = view.get("target_name")
+        running = [op for op in ops if op[2].get("state") in _OPERATION_RUNNING]
+        short = [op for op in running if op[1] != "Stacking"]
+        if short:
+            _, label, event = short[0]
+            text = label
+            if label == "Goto":
+                if event.get("count"):
+                    text += f" (attempt {event['count']})"
+                if target:
+                    text += f" – {target}"
+        elif running:
+            text = "Stacking" + (f" – {target}" if target else "")
+        elif view.get("state") in _OPERATION_RUNNING:
+            text = f"Live view ({view.get('mode') or '?'})" + (f" – {target}" if target else "")
+        else:
+            text = _OPERATION_IDLE
+        state["current_operation"] = text[:_OPERATION_TEXT_MAX]
+
+        done = [op for op in ops if op[2].get("state") in _OPERATION_DONE]
+        if done:
+            _, label, event = done[0]
+            text = f"{label}: {event['state']}"
+            if event.get("error"):
+                text += f" – {event['error']}"
+            elif event["state"] == "complete" and isinstance(event.get("lapse_ms"), (int, float)):
+                text += f" ({round(event['lapse_ms'] / 1000)} s)"
+            state["last_operation_result"] = text[:_OPERATION_TEXT_MAX]
+
+    @staticmethod
+    def _extract_arm_and_scan(state, event_state):
+        """Arm fold state + Sun/Moon search state from the newest matching event."""
+        def newest(names):
+            best, best_t = None, None
+            for name in names:
+                event = event_state.get(name)
+                if not isinstance(event, dict):
+                    continue
+                try:
+                    t = float(event.get("Timestamp"))
+                except (TypeError, ValueError):
+                    t = float("-inf")
+                if best_t is None or t > best_t:
+                    best, best_t = event, t
+            return best
+
+        arm = newest(_ARM_EVENTS)
+        if arm is not None and isinstance(arm.get("close"), bool):
+            state["arm_closed"] = arm["close"]
+        scan = newest([k for k in event_state if isinstance(k, str)
+                       and k.startswith(_SCAN_EVENT_PREFIX)])
+        if scan is not None and scan.get("state"):
+            state["solar_scan_state"] = scan["state"]
 
     @staticmethod
     def _extract_health(state, g):
@@ -657,6 +811,8 @@ class ScopeWorker:
             out["mount_mode"] = _mount_mode_label(bool(d("mount", "equ_mode")))
         if d("focuser", "step") is not None:
             out["focuser"] = d("focuser", "step")
+        if isinstance(d("mount", "close"), bool):
+            out["arm_closed"] = d("mount", "close")
         if d("setting", "heater_enable") is not None:
             out["dew_heater"] = bool(d("setting", "heater_enable"))
         if d("device", "firmware_ver_string"):
@@ -665,7 +821,46 @@ class ScopeWorker:
             out["battery"] = d("pi_status", "battery_capacity")
         if d("pi_status", "charger_status"):
             out["charger_status"] = d("pi_status", "charger_status")
+        # Storage: the DiskSpace event is rare (some firmware never sends it), but
+        # get_device_state always lists the volumes. Only a mounted volume has
+        # meaningful numbers (in USB-storage mode it reads "connected").
+        volume = d("storage", "storage_volume", 0)
+        if isinstance(volume, dict) and volume.get("state") == "mounted":
+            used = volume.get("used_percent")
+            if used is None:
+                total = volume.get("totalMB", volume.get("total_mb"))
+                free = volume.get("freeMB", volume.get("free_mb"))
+                if total and free is not None:
+                    used = round(100 * (1 - free / total))
+            if used is not None:
+                out["disk_used_pct"] = used
         return out
+
+    def _note_model(self, device_state: Any) -> None:
+        """Remember the scope's product_model; re-publish discovery when it changes.
+
+        The first report names the HA device model and publishes (or removes)
+        the model-specific controls, e.g. the S30-series wide camera.
+        """
+        if not isinstance(device_state, dict):
+            return
+        model = _nav(device_state, "device", "product_model")
+        if not isinstance(model, str) or not model.strip() or model.strip() == self._model:
+            return
+        self._model = model.strip()
+        _log.info("%s: model %s", self._device_id, self._model)
+        self.publish_discovery()
+
+    def _publish_if_supported(self, topic: str, key: str) -> bool:
+        """Whether to publish ``key``'s discovery config for this scope's model.
+
+        Unsupported on the reported model -> clear the retained config (removes
+        the entity from HA). Model not reported yet -> leave it as it is.
+        """
+        supported = supports_entity(key, self._model)
+        if supported is False:
+            self._mqtt.publish(topic, "", retain=True)
+        return bool(supported)
 
     # -- discovery + preview ----------------------------------------------------
 
@@ -675,10 +870,12 @@ class ScopeWorker:
         Namespaced under this scope's ``device_id`` so each scope appears as its
         own HA device.
         """
-        block = device_block(self._device_id, self._device_name)
+        block = device_block(self._device_id, self._device_name, self._model)
         prefix = self._settings.discovery_prefix
         for entity in ENTITIES:
             topic = f"{prefix}/{entity.component}/{self._device_id}/{entity.key}/config"
+            if not self._publish_if_supported(topic, entity.key):
+                continue
             payload = discovery_payload(
                 entity,
                 device_block=block,
@@ -692,11 +889,14 @@ class ScopeWorker:
         # the ``control`` dispatch module imported at the top.
         for control_entity in CONTROL_ENTITIES:
             topic = f"{prefix}/{control_entity.component}/{self._device_id}/{control_entity.key}/config"
+            if not self._publish_if_supported(topic, control_entity.key):
+                continue
             payload = control_discovery_payload(
                 control_entity,
                 device_block=block,
                 base_topic=self.base_topic,
                 bridge_availability_topic=self._bridge_availability_topic,
+                gate_topics=self._gate_topics_for(control_entity.key),
             )
             self._mqtt.publish(topic, json.dumps(payload), retain=True)
         camera = {
@@ -768,6 +968,37 @@ class ScopeWorker:
         """
         self._publish_control_state(_CONTROLS_ENABLED_KEY, self._controls_enabled)
         self._publish_control_state(_ALLOW_POWER_KEY, self._allow_power)
+        self._publish_gates()
+
+    def _gate_availability(self) -> bool:
+        return bool(getattr(self._settings, "gate_availability", False))
+
+    def _gate_topics_for(self, key: str) -> tuple[str, ...]:
+        """Extra availability topics for one command entity (gate_availability on).
+
+        The safety switches and the stored inputs (imaging mode, goto fields:
+        values only, never dispatched) stay available; every other command needs
+        Controls enabled, and the power actions also Allow power actions.
+        """
+        if not self._gate_availability() or key in _SAFETY_SWITCH_KEYS:
+            return ()
+        if control.stored_input_for(key) is not None:
+            return ()
+        ctl = control.control_for(key)
+        if ctl is None:
+            return ()
+        gate = "power" if ctl.power_gated else "controls"
+        return (gate_topic(self.base_topic, gate),)
+
+    def _publish_gates(self) -> None:
+        """Publish the gate availability topics (retained) from the safety switches."""
+        if not self._gate_availability():
+            return
+        controls = self._controls_enabled
+        power = self._controls_enabled and self._allow_power
+        for gate, open_ in (("controls", controls), ("power", power)):
+            self._mqtt.publish(gate_topic(self.base_topic, gate),
+                               _PAYLOAD_AVAILABLE if open_ else _PAYLOAD_NOT_AVAILABLE, retain=True)
 
     def _publish_control_state(self, key: str, value: Any) -> None:
         """Publish one control's current value to its retained ``state_topic``.
@@ -851,6 +1082,7 @@ class ScopeWorker:
         _log.info("%s: safety switch %s -> %s", self._device_id, key,
                   _SWITCH_ON if value else _SWITCH_OFF)
         self._publish_control_state(key, value)
+        self._publish_gates()
 
     def _apply_stored_input(self, key: str, payload: str) -> None:
         """Store a value-only input and echo it (retained) to its state_topic.
@@ -882,17 +1114,52 @@ class ScopeWorker:
         a blocked/failed command in HA; the dispatcher's log line is not the only
         trace.
         """
+        stored: dict[str, Any] = {
+            **self._stored_inputs,
+            control.PLAN_ACTIVE_KEY: bool(self._published_state.get("plan_active")),
+        }
+        if key == "goto_planet" and self._controls_enabled:
+            # Look the CURRENT position up right before the slew (read-only).
+            # On failure the coordinates stay absent and the builder refuses.
+            position = self._lookup_planet(stored.get(control.PLANET_KEY, control.DEFAULT_PLANET))
+            if position is not None:
+                stored[control.PLANET_RA_KEY], stored[control.PLANET_DEC_KEY] = position
         result = control.dispatch(
             self._alpaca, key, payload,
             controls_enabled=self._controls_enabled,
             allow_power=self._allow_power,
-            stored=self._stored_inputs,
+            stored=stored,
         )
         if result.status is DispatchStatus.OK:
             self._track_session_ownership(key)
             if self._control_is_stateful(key):
                 self._publish_control_state(key, payload)
-        self._publish_command_result(result.status.value, result.reason or key)
+                # the echo may not be what the scope ends up doing: let the next
+                # reading re-mirror the switch even if it equals the previous one
+                self._switch_synced.pop(key, None)
+        self._publish_command_result(_RESULT_LABELS.get(result.status, result.status.value),
+                                     result.reason or key)
+
+    def _lookup_planet(self, planet: str) -> tuple[float, float] | None:
+        """A planet's current (JNow) RA hours / Dec degrees from seestar_alp, or None."""
+        base = getattr(self._settings, "webui_base", None)
+        if not base:
+            _log.warning("%s: no seestar_alp web UI configured; cannot look up %s",
+                         self._device_id, planet)
+            return None
+        url = (f"{base.rstrip('/')}{_PLANET_LOOKUP_PATH}?planetname="
+               + urllib.parse.quote(f"{planet} barycenter"))
+        try:
+            with urllib.request.urlopen(url, timeout=_PLANET_LOOKUP_TIMEOUT_SEC) as resp:
+                text = resp.read().decode("utf-8", errors="replace")
+        except (OSError, http.client.HTTPException) as exc:
+            _log.warning("%s: planet lookup for %s failed: %s", self._device_id, planet, exc)
+            return None
+        position = parse_planet_position(text)
+        if position is None:
+            _log.warning("%s: unexpected planet lookup reply for %s: %r",
+                         self._device_id, planet, text[:120])
+        return position
 
     def _publish_command_result(self, status: str, detail: str) -> None:
         """Publish one dispatch outcome (retained) to the command-result topic.
@@ -1286,6 +1553,10 @@ class ScopeWorker:
             self._published_state.update(seeded)
             _log.info("%s: seeded %d last-known fields from retained state",
                       self._device_id, len(seeded))
+            # Give the switches their last-known reading right away: a switch
+            # that was never commanded has no retained state and would read
+            # 'unknown' until the scope next reports that field.
+            self._sync_switch_states(seeded)
 
     def _parse_retained_seed(self, payload: Any) -> dict[str, Any]:
         """Filter one retained state payload down to seedable catalog fields.
@@ -1363,8 +1634,9 @@ class ScopeWorker:
                 if reachable and now - last_slow >= state_poll and now >= slow_backoff_until:
                     last_slow = now
                     try:
-                        state.update(self.extract_device_state(
-                            self._alpaca.action("method_sync", {"method": _DEVICE_STATE_METHOD})))
+                        device_state = self._alpaca.action("method_sync", {"method": _DEVICE_STATE_METHOD})
+                        state.update(self.extract_device_state(device_state))
+                        self._note_model(device_state)
                         slow_fail_streak = 0
                         slow_backoff_until = 0.0
                     except TimeoutError:
@@ -1399,6 +1671,7 @@ class ScopeWorker:
                 self._published_state.update(state)
                 self._mqtt.publish(
                     self.state_topic, json.dumps(self._published_state), retain=True)
+                self._sync_switch_states(state)
                 last_preview_file = self._maybe_publish_preview(saved_fullname, last_preview_file)
                 self._maybe_publish_live(reachable)
             except Exception:  # the worker loop must be unkillable (see docstring)
@@ -1406,6 +1679,30 @@ class ScopeWorker:
                                self._device_id)
                 self._publish_offline_after_failed_cycle()
             time.sleep(event_poll)
+
+    #: Switches whose retained state is only the echo of the last accepted command,
+    #: paired with the read-only field that reports what the scope actually does.
+    _SWITCH_FEEDBACK = (("dew_heater_set", "dew_heater", bool), ("tracking_set", "tracking", bool),
+                        ("wide_cam", "active_camera", lambda v: v == "Wide-field"))
+
+    def _sync_switch_states(self, state: dict) -> None:
+        """Mirror the scope's reported heater/tracking/wide-camera state onto the switches.
+
+        A switch's state_topic otherwise only echoes the last command the bridge
+        accepted, so it drifts when the scope changes on its own (app, reboot,
+        auto power-off) or ignores the command: HA would show "on" while the
+        heater is off. Only fields observed THIS cycle are mirrored, and only on
+        change, so a missing reading never flips the switch.
+        """
+        synced = self._switch_synced
+        for switch_key, field, to_bool in self._SWITCH_FEEDBACK:
+            if field not in state or state[field] is None:
+                continue
+            value = to_bool(state[field])
+            if synced.get(switch_key) is value:
+                continue
+            synced[switch_key] = value
+            self._publish_control_state(switch_key, value)
 
     def _publish_offline_after_failed_cycle(self) -> None:
         """Best-effort ``offline`` for a cycle the catch-all just absorbed.

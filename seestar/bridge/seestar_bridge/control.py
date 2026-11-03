@@ -54,6 +54,7 @@ _SWITCH_OFF = "OFF"
 #    method_sync dispatch rather than a dedicated /action name) ------------------
 _METHOD_SYNC = "method_sync"
 _METHOD_ISCOPE_START_VIEW = "iscope_start_view"
+_METHOD_ISCOPE_STOP_VIEW = "iscope_stop_view"
 #: The MOUNT-STOW command: seestar_device sends ``{"method": "scope_park"}`` to
 #: stow the arm (its shut_down_thread parks with exactly this before powering
 #: off). Park uses THIS and only this.
@@ -61,6 +62,14 @@ _METHOD_SCOPE_PARK = "scope_park"
 #: Powers off the WHOLE device (seestar_device.shut_down_thread: park, then
 #: shut down the Pi). Only the ``shutdown`` control may ever send this.
 _METHOD_PI_SHUTDOWN = "pi_shutdown"
+#: Unfolds the arm to the horizon: the counterpart of scope_park (seestar_alp's
+#: SSC command page sends exactly this; the scope answers with ScopeMoveToHorizon
+#: events and ``close`` going False).
+_METHOD_SCOPE_MOVE_TO_HORIZON = "scope_move_to_horizon"
+#: The firmware's own Sun/Moon search, as seestar_alp's live 'Goto' sends it for
+#: moon/sun (front/app.py LiveGotoResource) after the view was started in that
+#: mode (device/actions.py: iscope_start_view {mode: sun}, then start_scan_planet).
+_METHOD_START_SCAN_PLANET = "start_scan_planet"
 #: The generic settings RPC the SSC web UI itself uses for gain
 #: (front/app.py LiveGainResource: ``set_setting {"isp_gain": <0..300>}``) and
 #: the wide-angle camera (LiveWideCamResource: ``set_setting {"wide_cam": bool}``).
@@ -87,6 +96,14 @@ _IMAGING_MODES = ("star", "scenery", "planet", "sun", "moon")
 #: Imaging-mode select (matches seestar_alp's own goto_target default).
 DEFAULT_IMAGING_MODE = "star"
 
+#: Planets for the 'Goto planet' select. Their positions come from seestar_alp
+#: (``/getplanetcoordinates``, skyfield + its bundled de440s ephemeris).
+PLANETS = ("mercury", "venus", "mars", "jupiter", "saturn", "uranus", "neptune")
+DEFAULT_PLANET = "jupiter"
+
+#: Imaging modes the firmware's Sun/Moon search works in.
+_SCAN_MODES = ("moon", "sun")
+
 # -- dew-heater power level when the switch is ON. The scope takes a 0..100 value;
 #    a non-zero value turns the heater on (action_set_dew_heater keys on > 0). ---
 _DEW_HEATER_ON_VALUE = 90
@@ -95,9 +112,17 @@ _DEW_HEATER_OFF_VALUE = 0
 # -- stored-input keys: value-only entities the worker stores (never dispatched);
 #    trigger buttons compose their dispatch payload from these at press time. ----
 IMAGING_MODE_KEY = "imaging_mode"
+PLANET_KEY = "planet"
+#: Worker-injected (never an HA entity): the planet's current position the
+#: worker looked up in seestar_alp right before dispatching 'Goto planet'.
+PLANET_RA_KEY = "_planet_ra"
+PLANET_DEC_KEY = "_planet_dec"
 GOTO_TARGET_KEY = "goto_target"
 GOTO_RA_KEY = "goto_ra"
 GOTO_DEC_KEY = "goto_dec"
+#: Worker-injected (never an HA entity): whether a plan is running right now,
+#: read from the last-known state when 'Stop' is pressed.
+PLAN_ACTIVE_KEY = "_plan_active"
 
 #: Label sent to goto_target when the operator set coordinates but no name.
 _GOTO_DEFAULT_NAME = "HA goto"
@@ -161,7 +186,7 @@ CallBuilder = Callable[[Any], Sequence[Call]]
 
 #: Composes a trigger control's dispatch payload from the worker's stored-input
 #: values (e.g. the Goto button reads the stored target/RA/Dec). Pure.
-StoredComposer = Callable[[Mapping[str, str]], Any]
+StoredComposer = Callable[[Mapping[str, Any]], Any]
 
 
 class Control(NamedTuple):
@@ -209,6 +234,7 @@ STORED_INPUTS: list[StoredInput] = [
     StoredInput(GOTO_TARGET_KEY, COMPONENT_TEXT),
     StoredInput(GOTO_RA_KEY, COMPONENT_TEXT),
     StoredInput(GOTO_DEC_KEY, COMPONENT_TEXT),
+    StoredInput(PLANET_KEY, COMPONENT_SELECT, PLANETS),
 ]
 
 _STORED_INPUTS_BY_KEY: dict[str, StoredInput] = {si.key: si for si in STORED_INPUTS}
@@ -289,6 +315,67 @@ def _start_live_view(payload: Any) -> Sequence[Call]:
         raise ValueError(f"imaging mode {mode!r} not in {list(_IMAGING_MODES)}")
     return [(_METHOD_SYNC, {"method": _METHOD_ISCOPE_START_VIEW,
                             "params": {"mode": mode}})]
+
+
+def _move_to_horizon(_payload: Any) -> Sequence[Call]:
+    """Unfold the arm to the horizon (the SSC command page's scope_move_to_horizon)."""
+    return [(_METHOD_SYNC, {"method": _METHOD_SCOPE_MOVE_TO_HORIZON})]
+
+
+def _find_sun_moon(payload: Any) -> Sequence[Call]:
+    """Start the moon/sun view and let the firmware find the target itself.
+
+    Uses the stored Imaging mode, which must be ``moon`` or ``sun``; any other
+    mode is REFUSED (the search only exists for those two). No coordinates are
+    involved: the scope locates the Sun/Moon on its own.
+    """
+    mode = str(payload)
+    if mode not in _SCAN_MODES:
+        raise ValueError(f"set Imaging mode to moon or sun first (is {mode!r})")
+    return [
+        (_METHOD_SYNC, {"method": _METHOD_ISCOPE_START_VIEW, "params": {"mode": mode}}),
+        (_METHOD_SYNC, {"method": _METHOD_START_SCAN_PLANET}),
+    ]
+
+
+def _goto_planet(payload: Any) -> Sequence[Call]:
+    """Start a planet view at the planet's CURRENT position (JNow).
+
+    The worker looks the position up in seestar_alp right before dispatch and
+    passes it in; without it the command is REFUSED — a planet position is never
+    guessed or cached across nights.
+    """
+    stored = payload if isinstance(payload, dict) else {}
+    name = str(stored.get("name") or "").strip()
+    ra, dec = stored.get("ra"), stored.get("dec")
+    if name not in PLANETS:
+        raise ValueError(f"planet {name!r} not in {list(PLANETS)}")
+    if not isinstance(ra, (int, float)) or not isinstance(dec, (int, float)):
+        raise ValueError(f"no current position for {name} (seestar_alp lookup failed)")
+    return [(_METHOD_SYNC, {"method": _METHOD_ISCOPE_START_VIEW, "params": {
+        "mode": "planet",
+        "target_name": name.capitalize(),
+        "target_ra_dec": [ra, dec],
+        "lp_filter": False,
+    }})]
+
+
+def _stop(payload: Any) -> Sequence[Call]:
+    """Stop whatever is running: the plan if one runs, then the view itself.
+
+    ``stop_scheduler`` alone only ends a SCHEDULER-driven session — a live view,
+    stack or goto started outside a plan kept running, and with no plan the
+    firmware answered "scheduler has already in complete state". This mirrors
+    seestar_alp's own live-mode stop (front/app.py LiveModeResource.on_delete):
+    stop_scheduler while a plan runs, iscope_stop_view otherwise. The view stop
+    always runs (also after a plan stop), so the scope is idle afterwards.
+    """
+    stored = payload if isinstance(payload, dict) else {}
+    calls: list[Call] = []
+    if stored.get(PLAN_ACTIVE_KEY):
+        calls.append(("stop_scheduler", {}))
+    calls.append((_METHOD_SYNC, {"method": _METHOD_ISCOPE_STOP_VIEW}))
+    return calls
 
 
 def _parse_angle(raw: Any, *, label: str) -> float:
@@ -473,8 +560,9 @@ def _as_number(payload: Any) -> float | int:
 #
 # KNOWN ROUGH EDGES (verified against seestar_alp device/telescope.py +
 # device/seestar_device.py):
-# - 'Stop' maps to stop_scheduler, so it only stops a SCHEDULER-driven session;
-#   a live view / stack started outside the scheduler is not stopped by it.
+# - 'Stop' ends a running plan (stop_scheduler) and then the view itself
+#   (iscope_stop_view), like seestar_alp's own live-mode stop; "plan running" is
+#   the last-known plan_active reading the worker passes in.
 # - 'Plate-solve loop' ON is a firmware > 2.47 no-op: seestar_alp answers
 #   start_plate_solve_loop with a "Deprecated" warning and does nothing (OFF
 #   still calls stop_plate_solve_loop).
@@ -494,7 +582,9 @@ CONTROLS: list[Control] = [
                 IMAGING_MODE_KEY, DEFAULT_IMAGING_MODE)),
     Control("start_stack", COMPONENT_BUTTON, "Start stacking",
             _simple("start_stack", {"restart": True})),
-    Control("stop", COMPONENT_BUTTON, "Stop", _simple("stop_scheduler", {})),
+    Control("stop", COMPONENT_BUTTON, "Stop", _stop,
+            payload_from_stored=lambda stored: {
+                PLAN_ACTIVE_KEY: bool(stored.get(PLAN_ACTIVE_KEY))}),
     Control("start_mosaic", COMPONENT_BUTTON, "Start mosaic",
             _simple("start_mosaic", {})),
     Control("start_spectra", COMPONENT_BUTTON, "Start spectra",
@@ -510,6 +600,17 @@ CONTROLS: list[Control] = [
             }),
     Control("stop_goto", COMPONENT_BUTTON, "Stop goto",
             _simple("stop_goto_target", {})),
+    # -- Solar system --
+    Control("move_to_horizon", COMPONENT_BUTTON, "Move to horizon", _move_to_horizon),
+    Control("find_sun_moon", COMPONENT_BUTTON, "Find Sun/Moon", _find_sun_moon,
+            payload_from_stored=lambda stored: stored.get(
+                IMAGING_MODE_KEY, DEFAULT_IMAGING_MODE)),
+    Control("goto_planet", COMPONENT_BUTTON, "Goto planet", _goto_planet,
+            payload_from_stored=lambda stored: {
+                "name": stored.get(PLANET_KEY, DEFAULT_PLANET),
+                "ra": stored.get(PLANET_RA_KEY),
+                "dec": stored.get(PLANET_DEC_KEY),
+            }),
     # Exposure is MILLISECONDS end-to-end (action_set_exposure's ``exp`` is ms).
     Control("exposure", COMPONENT_NUMBER, "Stack exposure", _exposure,
             min_value=EXPOSURE_MIN_MS, max_value=EXPOSURE_MAX_MS, step=1),
@@ -601,7 +702,7 @@ def dispatch(
     *,
     controls_enabled: bool,
     allow_power: bool,
-    stored: Mapping[str, str] | None = None,
+    stored: Mapping[str, Any] | None = None,
 ) -> DispatchResult:
     """Safety-gate, validate, and execute one control command.
 

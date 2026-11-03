@@ -121,3 +121,20 @@ def test_device_block_identifies_the_scope():
 def test_payload_embeds_the_device_block():
     payload = _payload("tracking")
     assert payload["device"] == device_block(DEVICE_ID, DEVICE_NAME)
+
+
+def test_model_family_and_wide_camera():
+    from seestar_bridge.entities import has_wide_camera, model_family, supports_entity
+    assert model_family("Seestar S50") == ("S50", False)
+    assert model_family("Seestar S30P") == ("S30", True)
+    assert model_family("Seestar S50 Pro") == ("S50", True)
+    assert model_family("Seestar S30 Plus") == ("S30", False)
+    assert model_family("Telescope X") == (None, False)
+    assert not has_wide_camera("Seestar S50")
+    assert has_wide_camera("Seestar S30") and has_wide_camera("Seestar S30 Pro")
+    assert has_wide_camera("Seestar S50P")
+    assert supports_entity("wide_cam", None) is None
+    assert supports_entity("wide_cam", "Seestar S50") is False
+    assert supports_entity("dew_heater_set", None) is True
+    assert supports_entity("wide_state", "Seestar S50") is False
+    assert supports_entity("telephoto_state", "Seestar S50") is True

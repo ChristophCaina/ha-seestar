@@ -133,6 +133,8 @@ same scope: a Seestar serves its command channel to one client at a time.
 | `alpaca_host` | string | `""` | Blank = find the seestar_alp add-on automatically (see [Finding the seestar_alp driver](#finding-the-seestar_alp-driver)). Set to `host:port` of a specific seestar_alp to use that one. |
 | `alpaca_webui_port` | port | `5432` | The port the seestar_alp web UI is served on, where each scope's address is read (`/config.json`) for the preview. Change only for a seestar_alp rebound elsewhere. |
 | `imaging_port` | port | `7556` | Port of seestar_alp's imaging server on the Alpaca host, where the Live view camera grabs its `/vid` MJPEG frames. Change only for an external seestar_alp bound to a non-stock imaging port. |
+| `proxy_external_webui` | bool | `true` | Serve the seestar_alp web UI (yours via `alpaca_host`, or the one found automatically) and its live view through ingress, so it opens in the HA sidebar and the companion app — also remotely, without exposing the seestar_alp host. Useful when seestar_alp runs outside Home Assistant (no add-on panel). Off = no panel. |
+| `gate_availability` | bool | `false` | Show the gated command entities as **unavailable** while **Controls enabled** is off (power actions: also **Allow power actions**), so a locked control greys out instead of silently refusing. The two safety switches and the goto / imaging-mode inputs stay available. Automations that arm the gate and then press a button should wait until the button is available. |
 | `mqtt_host` | string | `""` | Blank = use the Mosquitto add-on via the Supervisor. Set to override with another broker. |
 | `mqtt_port` | port | `1883` | Ignored while `mqtt_host` is blank (the Supervisor service supplies the port). Set `8883` for a TLS broker when overriding `mqtt_host`. |
 | `mqtt_username` | string | `""` | Broker username. Leave blank with the Mosquitto add-on. |
@@ -206,9 +208,23 @@ Each scope gets two safety switches, **both OFF by default**:
 A refused command is never silent: the refusal and its reason are published to
 the **Last command result** sensor, e.g.
 `refused: goto: controls are disabled (arm 'Controls enabled' first)`. The same
-sensor shows `ok: …` for accepted commands and `error: …` when the scope itself
+sensor shows `accepted: …` for commands seestar_alp took on (accepted, not yet
+done — the scope may still fail them) and `error: …` when the scope itself
 rejected or failed one — it is the first place to look when a button "did
 nothing".
+
+*Accepted* is not *done*: a goto can be accepted and still fail on the scope.
+Two sensors follow what the scope then actually does, from its own events:
+
+- **Current operation** — what runs right now, e.g. `Goto (attempt 3) – M 31`,
+  `Move to horizon`, `Sun/Moon search`, `Stacking – M 31`, `Live view (moon)`
+  or `Idle`.
+- **Last operation result** — how the last finished operation ended, with the
+  firmware's own error text, e.g. `Goto: fail – mount goto failed` or
+  `Move to horizon: complete (17 s)`.
+
+Watch these (or wait on them in an automation) when you operate the scope
+remotely.
 
 ### Control entities
 
@@ -222,7 +238,7 @@ another.
 | **Imaging mode** (select) | Chooses the mode (`star` / `scenery` / `planet` / `sun` / `moon`) that **Start live view** will use. | **Value-only**: changing it does nothing until *Start live view* is pressed. Defaults to `star`. |
 | **Start live view** (button) | Starts an imaging session in the selected imaging mode. | Makes this bridge the session's owning client, which is what turns the [Live view camera](#live-view-camera) on. |
 | **Start stacking** (button) | Starts (restarts) stacking on the current target. | Also starts an HA-owned session. |
-| **Stop** (button) | Stops the running scheduler session. | Only stops scheduler-driven sessions — see [Rough edges](#rough-edges). |
+| **Stop** (button) | Stops what is running: a plan (if one runs), then the live view, stack or goto. | Same as seestar_alp's own live-mode stop (`stop_scheduler` while a plan runs, `iscope_stop_view` always). |
 | **Start mosaic** (button) | Starts a mosaic capture. | |
 | **Start spectra** (button) | Starts a spectra capture. | |
 | **Goto target** (text) | Label for the goto session (e.g. `M31`). | **Name only** — seestar_alp does not resolve names to coordinates. |
@@ -230,6 +246,10 @@ another.
 | **Goto Dec** (text) | Declination for **Goto**. | Decimal degrees (`41.269`) or sexagesimal (`+41d16m9s`, `-05:23:28`); ±90°, J2000. |
 | **Goto** (button) | Slews to the stored RA/Dec, labelled with the stored target name. | **Refuses without parseable, in-range coordinates** — it never guesses where a name is. |
 | **Stop goto** (button) | Aborts an in-progress goto. | |
+| **Move to horizon** (button) | Unfolds the arm to the horizon — the counterpart of **Park**. | A goto fails (`mount goto failed`) while the arm is folded; watch **Arm closed**. Takes ~15–20 s. |
+| **Find Sun/Moon** (button) | Starts the view in the stored **Imaging mode** and lets the scope find the Sun or Moon itself (`start_scan_planet`). | **Refuses unless Imaging mode is `moon` or `sun`.** No coordinates involved; needs a clear view of the target. ⚠️ Sun only with the solar filter on. Progress on **Sun/Moon search**. |
+| **Planet** (select) | Chooses the planet (`mercury` … `neptune`) for **Goto planet**. | **Value-only**, like Imaging mode. Defaults to `jupiter`. |
+| **Goto planet** (button) | Looks up the planet's current position in seestar_alp (its own *Search For: Planet*, `/getplanetcoordinates`) and starts a planet view there. | **Refuses when the lookup fails** — a planet position is never guessed. Needs seestar_alp's web UI (`alpaca_webui_port`). |
 | **Stack exposure** (number) | Sets the stacking exposure **in milliseconds** (1–60000). | ms end-to-end: solar work is ~1–5 ms; deep-sky stacking is tens of seconds (`10000`, `30000`). |
 | **Gain** (number) | Sets the camera ISP gain (0–300). | The same `set_setting` call seestar_alp's own web UI makes. |
 | **Focus** (number) | Nudges the focuser by a relative number of steps (−500…500). | |
@@ -237,7 +257,7 @@ another.
 | **Mag declination** (number) | Magnetic-declination fudge angle for the compass calibration (±180°). | |
 | **Tracking** (switch) | Turns mount tracking on or off. | |
 | **Dew heater** (switch) | Turns the dew heater on or off. | ON applies a fixed power level of 90 (scale 0–100). |
-| **Wide camera** (switch) | Enables/disables the wide-angle camera. | S30-series only; upstream marks the setting experimental — see [Rough edges](#rough-edges). |
+| **Wide camera** (switch) | Enables/disables the wide-angle camera. | Only created on models with a wide-angle camera (S30, S30 Pro, S50 Pro); upstream marks the setting experimental — see [Rough edges](#rough-edges). |
 | **Record video** (switch) | Starts/stops planetary video recording. | Only records during a planetary live session — see [Rough edges](#rough-edges). |
 | **Plate-solve loop** (switch) | Starts/stops the polar-align plate-solve loop. | ON is a no-op on firmware > 2.47 — see [Rough edges](#rough-edges). |
 | **Run plan** (text) | Runs a saved plan **by name**: imports it, then starts the scheduler. | The name resolves under seestar_alp's own `schedule/` directory (where its SSC web UI saves plans); `.json` is appended if omitted. **No paths** — a name containing `/`, `\`, `..`, or starting with `~`/`.` is refused. |
@@ -270,15 +290,15 @@ left out is listed under
 [Deliberate omissions](#deliberate-omissions) below. Known edges, verified
 against seestar_alp:
 
-- **Stop only stops scheduler-driven sessions.** The *Stop* button maps to
-  seestar_alp's `stop_scheduler`, so a live view or stack started outside the
-  scheduler is not stopped by it.
 - **Plate-solve loop ON is a no-op on firmware newer than 2.47.** seestar_alp
   answers `start_plate_solve_loop` with a "Deprecated" warning and does nothing;
   turning the switch OFF still calls `stop_plate_solve_loop`.
 - **Wide camera is S30-series only.** The `wide_cam` setting exists on the
   S30/S30 Pro; seestar_alp's own web UI additionally hides the toggle behind an
-  experimental flag. Other models refuse or ignore it.
+  experimental flag. The add-on reads each scope's `product_model` and only
+  creates the switch (and the Wide-field sensors) on models with a wide-angle
+  camera (S30, S30 Pro, S50 Pro); on an S50 they are removed once the model
+  has been reported.
 - **Record video only records during a planetary live session.** Outside one,
   the scope refuses `start_record_avi` in-band and the refusal shows as
   `error: …` on **Last command result**.
@@ -410,8 +430,16 @@ These are deliberate v1 limitations, documented so they don't surprise you:
 2. **The base image is pinned by tag, not by digest.** The Dockerfile builds from
    `ghcr.io/home-assistant/<arch>-base-debian:trixie-2026.06.1` (a tag), so a
    rebuild could pick up an updated base under the same tag.
-3. **No web UI of its own.** The seestar_alp SSC web UI is in the seestar_alp
-   add-on's sidebar panel.
+3. **The web UI is proxied, with URL rewriting.** With
+   `proxy_external_webui` on (default), the **Seestar** panel reverse-proxies
+   the seestar_alp web UI (`alpaca_host`, or the one found automatically) on `alpaca_webui_port`, and its
+   imaging server (`imaging_port`: live `/vid`, `/live/status`) under
+   `/_imaging/`. seestar_alp's pages use root-relative and absolute
+   `http://host:7556` URLs, so the proxy rewrites HTML, JavaScript and CSS
+   responses onto the ingress path; streams pass through unbuffered. A page that
+   assembles URLs some other way may still escape the prefix — open your
+   instance directly then. With `proxy_external_webui: false` there is no panel
+   (the seestar_alp add-on brings its own).
 
    <a id="renaming-a-scope-creates-a-new-device"></a>
 

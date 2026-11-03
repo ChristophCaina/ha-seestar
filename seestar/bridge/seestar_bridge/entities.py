@@ -64,6 +64,11 @@ _STATE_SUBTOPIC = "state"
 _AVAILABILITY_SUBTOPIC = "availability"
 
 
+def gate_topic(base_topic: str, gate: str) -> str:
+    """Availability topic of one safety gate (``controls`` or ``power``)."""
+    return f"{base_topic}/gate/{gate}"
+
+
 def availability_list(*topics: str) -> list[dict[str, str]]:
     """Build an MQTT-discovery ``availability`` list over one or more topics.
 
@@ -81,10 +86,52 @@ def availability_list(*topics: str) -> list[dict[str, str]]:
         for topic in topics
     ]
 
-# Static identity for the Seestar S30 Pro hardware. Per-scope identity (id/name)
-# is injected via ``device_block`` so multiple scopes don't collide.
+# Static manufacturer; per-scope identity (id/name/model) is injected via
+# ``device_block`` so multiple scopes don't collide. ``_MODEL`` is the fallback
+# until the scope reports its own ``product_model``.
 _MANUFACTURER = "ZWO"
-_MODEL = "Seestar S30 Pro"
+_MODEL = "Seestar"
+
+
+def model_family(model: Any) -> tuple[str | None, bool]:
+    """Normalise a ``product_model`` string to ("S30"|"S50", is_pro).
+
+    The firmware reports "Seestar " + a short name (S50, S50N, S30, S30P, S50P);
+    older builds use "S30 Pro"/"S50 Pro". Same loose match as seestar_alp's
+    ``_model_family`` (an S30 Plus reads as a plain S30); ``(None, False)`` when unknown.
+    """
+    compact = re.sub(r"[\s_-]+", "", str(model or "")).lower()
+    m = re.search(r"s(30|50)(pro|p(?!lus))?", compact)
+    if not m:
+        return None, False
+    return f"S{m.group(1)}", bool(m.group(2))
+
+
+def has_wide_camera(model: Any) -> bool:
+    """S30, S30 Pro and S50 Pro have a wide-angle camera; the S50 does not."""
+    family, is_pro = model_family(model)
+    return family == "S30" or (family == "S50" and is_pro)
+
+
+#: Entities (sensors and controls) that only exist on some models: key ->
+#: predicate on the reported ``product_model``. Until the model is known they
+#: are left as they are (neither published nor removed), so a restart never
+#: makes them flicker. The wide-field sensors read the SecondView event of the
+#: wide-angle camera, which an S50 never sends.
+MODEL_SPECIFIC = {
+    key: has_wide_camera
+    for key in ("wide_cam", "wide_target", "wide_state", "wide_mode", "wide_gain", "wide_lp")
+}
+
+
+def supports_entity(key: str, model: Any) -> bool | None:
+    """True/False once ``model`` is known; None while it is still unknown."""
+    predicate = MODEL_SPECIFIC.get(key)
+    if predicate is None:
+        return True
+    if not model:
+        return None
+    return predicate(model)
 
 # value_template forms: binary sensors map truthiness to ON/OFF; plain sensors
 # pass the value through, emitting "" for a missing (None) field so HA shows the
@@ -159,8 +206,18 @@ ENTITIES: list[Entity] = [
     Entity("sensor", "azimuth", "Azimuth", "°", None, "measurement", "mdi:compass"),
     Entity("binary_sensor", "at_park", "Parked", None, None, None, "mdi:home-import-outline"),
     Entity("binary_sensor", "at_home", "At home", None, None, None, "mdi:home"),
+    # The arm's own fold state (ScopeHome / ScopeMoveToHorizon events, else
+    # get_device_state mount.close): what a goto needs to be false.
+    Entity("binary_sensor", "arm_closed", "Arm closed", None, None, None, "mdi:arrow-collapse-down"),
+    # State of the firmware's own Sun/Moon search (start_scan_planet).
+    Entity("sensor", "solar_scan_state", "Sun/Moon search", None, None, None, "mdi:weather-sunny"),
     Entity("sensor", "mount_mode", "Mount mode", None, None, None, "mdi:axis"),
     Entity("sensor", "last_alert", "Last alert", None, None, None, "mdi:alert-circle"),
+    # What the scope is doing right now, and how its last finished operation
+    # ended (with the firmware's error text) — the "done/failed" counterpart of
+    # Last command result, which only says whether a command was accepted.
+    Entity("sensor", "current_operation", "Current operation", None, None, None, "mdi:progress-clock"),
+    Entity("sensor", "last_operation_result", "Last operation result", None, None, None, "mdi:clipboard-check-outline"),
     Entity("binary_sensor", "connected", "Connected", None, "connectivity", None, None),
     # Health (mostly best-effort via get_device_state)
     Entity("sensor", "temperature", "Sensor temperature", "°C", "temperature", "measurement", "mdi:thermometer"),
@@ -183,7 +240,7 @@ def slug(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
 
 
-def device_block(device_id: str, device_name: str) -> dict[str, Any]:
+def device_block(device_id: str, device_name: str, model: str | None = None) -> dict[str, Any]:
     """The MQTT discovery ``device`` block tying every entity to one HA device.
 
     ``device_id`` (a slug of the scope name) is the stable identifier; the
@@ -193,7 +250,7 @@ def device_block(device_id: str, device_name: str) -> dict[str, Any]:
         "identifiers": [device_id],
         "name": device_name,
         "manufacturer": _MANUFACTURER,
-        "model": _MODEL,
+        "model": model or _MODEL,
     }
 
 
@@ -282,6 +339,10 @@ class ControlEntity(NamedTuple):
 # the two are asserted disjoint-from-Phase-1 and consistent by the control tests).
 _IMAGING_MODES = ("star", "scenery", "planet", "sun", "moon")
 
+# Planets offered by the Planet select (mirrors control.PLANETS; asserted
+# consistent by the control tests).
+_PLANETS = ("mercury", "venus", "mars", "jupiter", "saturn", "uranus", "neptune")
+
 # Exposure bounds in MILLISECONDS — must mirror control.EXPOSURE_MIN/MAX_MS
 # (asserted consistent by the control tests): action_set_exposure's ``exp`` is
 # ms on the wire, so the HA number is ms end-to-end (solar ~1-5 ms up to 60 s).
@@ -329,6 +390,19 @@ CONTROL_ENTITIES: list[ControlEntity] = [
     ControlEntity(_COMPONENT_BUTTON, "goto", "Goto", "mdi:crosshairs-gps"),
     ControlEntity(_COMPONENT_BUTTON, "stop_goto", "Stop goto",
                   "mdi:crosshairs-off"),
+    # -- Solar system --
+    # Unfold the arm to the horizon (the counterpart of Park).
+    ControlEntity(_COMPONENT_BUTTON, "move_to_horizon", "Move to horizon",
+                  "mdi:arrow-expand-up"),
+    # Start the Imaging mode's view (moon or sun) and let the scope find it.
+    ControlEntity(_COMPONENT_BUTTON, "find_sun_moon", "Find Sun/Moon",
+                  "mdi:weather-night"),
+    # Planet is a stored VALUE; 'Goto planet' looks its current position up in
+    # seestar_alp and starts a planet view there.
+    ControlEntity(_COMPONENT_SELECT, "planet", "Planet", "mdi:orbit",
+                  options=_PLANETS),
+    ControlEntity(_COMPONENT_BUTTON, "goto_planet", "Goto planet",
+                  "mdi:crosshairs-gps"),
     ControlEntity(_COMPONENT_NUMBER, "exposure", "Stack exposure",
                   "mdi:camera-timer", min_value=_EXPOSURE_MIN_MS,
                   max_value=_EXPOSURE_MAX_MS, step=1, unit=_EXPOSURE_UNIT),
@@ -386,8 +460,12 @@ def control_discovery_payload(
     device_block: dict[str, Any],
     base_topic: str,
     bridge_availability_topic: str,
+    gate_topics: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Build the MQTT discovery config for one command entity.
+
+    ``gate_topics`` (optional) are extra availability topics ANDed in, so a gated
+    command entity reads *unavailable* while its safety switch is off.
 
     Every command entity gets a ``command_topic`` (``seestar/<device>/cmd/<key>``)
     the bridge subscribes to. Stateful controls (switch/select/number/text) also
@@ -407,7 +485,7 @@ def control_discovery_payload(
         "unique_id": f"{device_id}_{entity.key}",
         "object_id": f"{device_id}_{entity.key}",
         "command_topic": cmd_topic,
-        "availability": availability_list(bridge_availability_topic, scope_availability_topic),
+        "availability": availability_list(bridge_availability_topic, scope_availability_topic, *gate_topics),
         "availability_mode": _AVAILABILITY_MODE_ALL,
         "device": device_block,
     }

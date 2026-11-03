@@ -402,11 +402,23 @@ def test_focus_number_maps_to_steps():
     assert params["steps"] == 30
 
 
-def test_stop_maps_to_stop_scheduler():
+def test_stop_without_a_plan_stops_the_view():
+    # No plan running: stop_scheduler would only answer "already in complete
+    # state"; the live view / stack / goto is ended with iscope_stop_view.
     alpaca = _StubAlpaca()
-    result = dispatch(alpaca, "stop", {}, controls_enabled=True, allow_power=False)
+    result = dispatch(alpaca, "stop", "PRESS", controls_enabled=True, allow_power=False,
+                      stored={control.PLAN_ACTIVE_KEY: False})
     assert result.status is DispatchStatus.OK
-    assert alpaca.calls[0][0] == "stop_scheduler"
+    assert alpaca.calls == [("method_sync", {"method": "iscope_stop_view"})]
+
+
+def test_stop_with_a_plan_stops_the_scheduler_then_the_view():
+    alpaca = _StubAlpaca()
+    result = dispatch(alpaca, "stop", "PRESS", controls_enabled=True, allow_power=False,
+                      stored={control.PLAN_ACTIVE_KEY: True})
+    assert result.status is DispatchStatus.OK
+    assert alpaca.calls == [("stop_scheduler", {}),
+                            ("method_sync", {"method": "iscope_stop_view"})]
 
 
 # -- Phase-2 spec-catalog additions: gain / tracking / wide-cam / AF / record ------
@@ -527,6 +539,9 @@ _SAMPLE_STORED = {
     control.GOTO_TARGET_KEY: "M42",
     control.GOTO_RA_KEY: "5.591",
     control.GOTO_DEC_KEY: "-5.39",
+    control.PLANET_KEY: "jupiter",
+    control.PLANET_RA_KEY: 5.31,
+    control.PLANET_DEC_KEY: 22.39,
 }
 
 
@@ -728,3 +743,55 @@ def test_safety_switches_are_not_in_the_dispatch_catalog(safety_key):
     # controls (dispatching them would recurse the gate onto the gate).
     dispatch_keys = {ctl.key for ctl in control.CONTROLS}
     assert safety_key not in dispatch_keys
+
+
+# ---------------------------------------------------------- solar system controls
+def test_move_to_horizon_unfolds_the_arm():
+    alpaca = _StubAlpaca()
+    result = dispatch(alpaca, "move_to_horizon", "PRESS", controls_enabled=True, allow_power=False)
+    assert result.ok
+    assert alpaca.calls == [("method_sync", {"method": "scope_move_to_horizon"})]
+
+
+def test_find_sun_moon_starts_the_view_then_the_search():
+    alpaca = _StubAlpaca()
+    result = dispatch(alpaca, "find_sun_moon", "PRESS", controls_enabled=True, allow_power=False,
+                      stored={control.IMAGING_MODE_KEY: "moon"})
+    assert result.ok
+    assert alpaca.calls == [
+        ("method_sync", {"method": "iscope_start_view", "params": {"mode": "moon"}}),
+        ("method_sync", {"method": "start_scan_planet"}),
+    ]
+
+
+def test_find_sun_moon_refuses_other_modes():
+    alpaca = _StubAlpaca()
+    result = dispatch(alpaca, "find_sun_moon", "PRESS", controls_enabled=True, allow_power=False,
+                      stored={control.IMAGING_MODE_KEY: "star"})
+    assert result.status is DispatchStatus.REFUSED and "moon or sun" in result.reason
+    assert alpaca.calls == []
+
+
+def test_goto_planet_starts_a_planet_view_at_the_position():
+    alpaca = _StubAlpaca()
+    result = dispatch(alpaca, "goto_planet", "PRESS", controls_enabled=True, allow_power=False,
+                      stored={control.PLANET_KEY: "saturn",
+                              control.PLANET_RA_KEY: 22.5, control.PLANET_DEC_KEY: -11.2})
+    assert result.ok
+    assert alpaca.calls == [("method_sync", {"method": "iscope_start_view", "params": {
+        "mode": "planet", "target_name": "Saturn", "target_ra_dec": [22.5, -11.2],
+        "lp_filter": False}})]
+
+
+def test_goto_planet_refuses_without_a_position():
+    alpaca = _StubAlpaca()
+    result = dispatch(alpaca, "goto_planet", "PRESS", controls_enabled=True, allow_power=False,
+                      stored={control.PLANET_KEY: "saturn"})
+    assert result.status is DispatchStatus.REFUSED and "lookup failed" in result.reason
+    assert alpaca.calls == []
+
+
+def test_planet_options_match_the_entity_catalog():
+    from seestar_bridge.entities import CONTROL_ENTITIES
+    planet = next(e for e in CONTROL_ENTITIES if e.key == control.PLANET_KEY)
+    assert tuple(planet.options) == control.PLANETS
