@@ -244,7 +244,7 @@ another.
 | **Goto target** (text) | Label for the goto session (e.g. `M31`). | **Name only** — seestar_alp does not resolve names to coordinates. |
 | **Goto RA** (text) | Right ascension for **Goto**. | Decimal hours (`0.7123`) or sexagesimal (`0h42m44s`, `0:42:44`); 0–24 h, J2000. |
 | **Goto Dec** (text) | Declination for **Goto**. | Decimal degrees (`41.269`) or sexagesimal (`+41d16m9s`, `-05:23:28`); ±90°, J2000. |
-| **Goto** (button) | Slews to the stored RA/Dec, labelled with the stored target name. | **Refuses without parseable, in-range coordinates** — it never guesses where a name is. |
+| **Goto** (button) | Slews to the stored RA/Dec, labelled with the stored target name. A view, goto or plan still running is ended first (`iscope_stop_view`, a 3 s pause), so the firmware drops the old target. | **Refuses without parseable, in-range coordinates** — it never guesses where a name is. |
 | **Stop goto** (button) | Aborts an in-progress goto. | |
 | **Move to horizon** (button) | Unfolds the arm to the horizon — the counterpart of **Park**. | A goto fails (`mount goto failed`) while the arm is folded; watch **Arm closed**. Takes ~15–20 s. |
 | **Find Sun/Moon** (button) | Starts the view in the stored **Imaging mode** and lets the scope find the Sun or Moon itself (`start_scan_planet`). | **Refuses unless Imaging mode is `moon` or `sun`.** No coordinates involved; needs a clear view of the target. ⚠️ Sun only with the solar filter on. Progress on **Sun/Moon search**. |
@@ -266,7 +266,7 @@ another.
 | **Skip current target** (button) | Skips the plan's current item. | |
 | **Reset current item** (button) | Resets the plan's current item. | |
 | **Startup sequence** (button) | Runs the scope's startup sequence. | **Power-gated.** |
-| **Park** (button) | Stows the mount arm. | **Power-gated.** Park only stows — it never powers off. |
+| **Park** (button) | Stows the mount arm. A view, goto or plan still running is ended first, so the scope doesn't resume it after the arm folded. | **Power-gated.** Park only stows — it never powers off. |
 | **Shutdown** (button) | Powers off the **whole device** (parks, then halts). | **Power-gated.** |
 
 ### Live view camera

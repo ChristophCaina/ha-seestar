@@ -217,6 +217,8 @@ def test_run_plan_appends_json_suffix_to_bare_name():
     "",                         # empty
     "   ",                      # whitespace only
 ])
+
+
 def test_run_plan_refuses_path_traversal_and_non_basenames(evil):
     # seestar_alp's import_schedule does open(filepath) VERBATIM, so anything but
     # a bare plan name must refuse BEFORE any Alpaca call.
@@ -323,6 +325,8 @@ def test_goto_with_unparseable_coordinates_is_refused():
     ("10.0", "-90.5"),   # Dec beyond -90
     ("nan", "10.0"),     # NaN never passes the range check
 ])
+
+
 def test_goto_with_out_of_range_coordinates_is_refused(ra, dec):
     alpaca = _StubAlpaca()
     result = dispatch(
@@ -449,6 +453,8 @@ def test_gain_out_of_range_refused_without_alpaca_call():
 
 
 @pytest.mark.parametrize("payload,expected", [("ON", True), ("OFF", False)])
+
+
 def test_tracking_switch_maps_to_scope_set_track_state(payload, expected):
     # Verified wire shape: params is a BARE BOOL (seestar_alp's own Bruno API
     # collection and its bundled CLI client both send it that way).
@@ -462,6 +468,8 @@ def test_tracking_switch_maps_to_scope_set_track_state(payload, expected):
 
 
 @pytest.mark.parametrize("payload,expected", [("ON", True), ("OFF", False)])
+
+
 def test_wide_cam_switch_maps_to_set_setting(payload, expected):
     # Verified against seestar_alp front/app.py LiveWideCamResource:
     # method_sync set_setting {"wide_cam": <bool>}.
@@ -508,6 +516,8 @@ _NEW_CONTROL_KEYS = ("gain", "tracking_set", "wide_cam", "auto_focus", "record_v
 
 
 @pytest.mark.parametrize("key", _NEW_CONTROL_KEYS)
+
+
 def test_new_controls_are_gate_refused_when_disarmed(key):
     # Every addition is gated exactly like the rest: gate closed => REFUSED,
     # and NOTHING reaches the scope.
@@ -519,6 +529,8 @@ def test_new_controls_are_gate_refused_when_disarmed(key):
 
 
 @pytest.mark.parametrize("key", _NEW_CONTROL_KEYS)
+
+
 def test_new_controls_are_not_power_gated(key):
     # None of these is destructive, so none needs the second (power) gate.
     assert _control(key).power_gated is False
@@ -738,6 +750,8 @@ def test_control_entity_component_name_and_range_match_the_dispatch_catalog():
 
 
 @pytest.mark.parametrize("safety_key", ["controls_enabled", "allow_power"])
+
+
 def test_safety_switches_are_not_in_the_dispatch_catalog(safety_key):
     # The safety switches gate dispatch; they are NOT themselves dispatchable
     # controls (dispatching them would recurse the gate onto the gate).
@@ -746,6 +760,8 @@ def test_safety_switches_are_not_in_the_dispatch_catalog(safety_key):
 
 
 # ---------------------------------------------------------- solar system controls
+
+
 def test_move_to_horizon_unfolds_the_arm():
     alpaca = _StubAlpaca()
     result = dispatch(alpaca, "move_to_horizon", "PRESS", controls_enabled=True, allow_power=False)
@@ -795,3 +811,56 @@ def test_planet_options_match_the_entity_catalog():
     from seestar_bridge.entities import CONTROL_ENTITIES
     planet = next(e for e in CONTROL_ENTITIES if e.key == control.PLANET_KEY)
     assert tuple(planet.options) == control.PLANETS
+
+
+def _no_sleep(monkeypatch):
+    slept = []
+    monkeypatch.setattr(control.time, "sleep", slept.append)
+    return slept
+
+
+def test_park_ends_a_running_view_first(monkeypatch):
+    """Park while a goto/plate-solve runs: stop the view, settle, then park."""
+    slept = _no_sleep(monkeypatch)
+    alpaca = _StubAlpaca()
+    result = dispatch(alpaca, "park", None, controls_enabled=True, allow_power=True,
+                      stored={control.VIEW_BUSY_KEY: True})
+    assert result.status is DispatchStatus.OK
+    assert [p.get("method") for _, p in alpaca.calls] == ["iscope_stop_view", "scope_park"]
+    assert slept == [control.VIEW_STOP_SETTLE_SEC]
+
+
+def test_park_on_an_idle_scope_only_parks(monkeypatch):
+    slept = _no_sleep(monkeypatch)
+    alpaca = _StubAlpaca()
+    dispatch(alpaca, "park", None, controls_enabled=True, allow_power=True, stored={})
+    assert [p.get("method") for _, p in alpaca.calls] == ["scope_park"]
+    assert slept == []
+
+
+def test_park_stops_a_running_plan_and_view(monkeypatch):
+    _no_sleep(monkeypatch)
+    alpaca = _StubAlpaca()
+    dispatch(alpaca, "park", None, controls_enabled=True, allow_power=True,
+             stored={control.PLAN_ACTIVE_KEY: True})
+    assert [n for n, _ in alpaca.calls] == ["stop_scheduler", "method_sync", "method_sync"]
+    assert [p.get("method") for _, p in alpaca.calls[1:]] == ["iscope_stop_view", "scope_park"]
+
+
+def test_goto_ends_the_previous_target_first(monkeypatch):
+    """A new goto while the old one still retries: the old view ends first."""
+    slept = _no_sleep(monkeypatch)
+    alpaca = _StubAlpaca()
+    result = dispatch(alpaca, "goto", None, controls_enabled=True, allow_power=False,
+                      stored={**_goto_stored(), control.VIEW_BUSY_KEY: True})
+    assert result.status is DispatchStatus.OK
+    assert [n for n, _ in alpaca.calls] == ["method_sync", "goto_target"]
+    assert alpaca.calls[0][1]["method"] == "iscope_stop_view"
+    assert slept == [control.VIEW_STOP_SETTLE_SEC]
+
+
+def test_goto_on_an_idle_scope_is_unchanged(monkeypatch):
+    _no_sleep(monkeypatch)
+    alpaca = _StubAlpaca()
+    dispatch(alpaca, "goto", None, controls_enabled=True, allow_power=False, stored=_goto_stored())
+    assert [n for n, _ in alpaca.calls] == ["goto_target"]

@@ -1124,6 +1124,7 @@ class ScopeWorker:
         stored: dict[str, Any] = {
             **self._stored_inputs,
             control.PLAN_ACTIVE_KEY: bool(self._published_state.get("plan_active")),
+            control.VIEW_BUSY_KEY: self._view_busy(),
         }
         if key == "goto_planet" and self._controls_enabled:
             # Look the CURRENT position up right before the slew (read-only).
@@ -1170,6 +1171,13 @@ class ScopeWorker:
             _log.warning("%s: unexpected planet lookup reply for %s: %r",
                          self._device_id, planet, text[:120])
         return position
+
+    def _view_busy(self) -> bool:
+        """A view / goto / stack still runs per the last-known state (for park + goto)."""
+        st = self._published_state
+        view = str(st.get("telephoto_state") or "").lower()
+        return (bool(view) and view not in _VIEW_ENDED_STATES) or bool(st.get("slewing")) \
+            or str(st.get("goto_state") or "").lower() == _GOTO_WORKING
 
     def _publish_command_result(self, status: str, detail: str) -> None:
         """Publish one dispatch outcome (retained) to the command-result topic.
