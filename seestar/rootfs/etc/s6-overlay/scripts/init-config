@@ -38,6 +38,15 @@ fi
 
 if bashio::config.has_value 'alpaca_host'; then
     bashio::log.info "Using the seestar_alp at '$(bashio::config 'alpaca_host')'."
+    # Web UI + imaging server on the same host, for the ingress proxy
+    # (proxy_external_webui). With alpaca_host blank the proxy reads the endpoint
+    # the bridge found instead (/run/seestar/alpaca_endpoint).
+    alpaca_host="$(bashio::config 'alpaca_host')"
+    webui_host="${alpaca_host%:*}"
+    write_env 'SEESTAR_EXTERNAL_WEBUI_URL' \
+        "http://${webui_host}:$(bashio::config 'alpaca_webui_port')"
+    write_env 'SEESTAR_EXTERNAL_IMAGING_URL' \
+        "http://${webui_host}:$(bashio::config 'imaging_port')"
 else
     bashio::log.info "alpaca_host is blank: the bridge will look for the seestar_alp add-on."
 fi

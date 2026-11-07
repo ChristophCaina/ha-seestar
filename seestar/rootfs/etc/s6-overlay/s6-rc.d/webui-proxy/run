@@ -1,0 +1,18 @@
+#!/command/with-contenv bashio
+# shellcheck shell=bash
+# ==============================================================================
+# webui-proxy longrun — the seestar_alp web UI through ingress (optional).
+#
+# proxy_external_webui on: reverse-proxy the seestar_alp web UI (alpaca_host, or
+# the endpoint the bridge found automatically) and its imaging server, so the
+# sidebar panel and the companion app (also remotely) reach it without a direct
+# LAN connection. Off: nothing listens on the ingress port.
+# ==============================================================================
+
+if bashio::config.true 'proxy_external_webui'; then
+    bashio::log.info "Serving the seestar_alp web UI through ingress."
+    export PYTHONPATH="/app/bridge${PYTHONPATH:+:${PYTHONPATH}}"
+    exec python3 -m seestar_bridge.ingress_proxy
+fi
+bashio::log.info "proxy_external_webui is off: no web UI panel."
+exec sleep infinity

@@ -189,6 +189,21 @@ def subscribe_commands(mqtt_client, workers: list[ScopeWorker]) -> None:
         _log.info("subscribed to command topics: %s", topic_filter)
 
 
+
+#: Where the found seestar_alp endpoint is shared with the ingress web-UI proxy
+#: (a separate s6 service that cannot run the discovery itself).
+ENDPOINT_FILE = "/run/seestar/alpaca_endpoint"
+
+
+def _share_endpoint(host_port: str, path: str = ENDPOINT_FILE) -> None:
+    """Write the discovered ``host:port`` for the ingress proxy (best effort)."""
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(host_port)
+    except OSError as exc:
+        _log.warning("could not share the seestar_alp endpoint with the web-UI proxy: %s", exc)
+
 def main() -> None:
     """Compose the real pieces and run a worker thread per scope (blocks forever)."""
     settings = load_settings(_options(), dict(os.environ))
@@ -203,6 +218,7 @@ def main() -> None:
         # alpaca_host blank: find the seestar_alp (add-on or LAN instance).
         host_port = find_alpaca_endpoint(supervisor_token=os.environ.get("SUPERVISOR_TOKEN"))
         settings = with_alpaca_endpoint(settings, host_port)
+        _share_endpoint(host_port)
 
     # Device 0 is a placeholder for the management enumeration call; per-scope
     # Alpaca clients (bound to the real device numbers) are built in build_workers.

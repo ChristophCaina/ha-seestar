@@ -13,6 +13,13 @@ configuration:
     description: >-
       The port your seestar_alp serves its web UI on, where each scope's address
       for the preview is read. Default 5432; change only if you rebound it.
+  proxy_external_webui:
+    name: Web UI through ingress
+    description: >-
+      For a seestar_alp outside Home Assistant (alpaca_host, or the one found
+      automatically): open its web UI and live view in the Home Assistant sidebar
+      and the companion app, also remotely. Off (default) = no panel; the
+      seestar_alp add-on brings its own.
   mqtt_host:
     name: MQTT host
     description: >-

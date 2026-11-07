@@ -126,6 +126,20 @@ broadcast domain): set `alpaca_host` to its `host:port` (e.g.
 `192.168.1.50:5555`). Discovery is skipped. Don't run two drivers against the
 same scope: a Seestar serves its command channel to one client at a time.
 
+## Web UI of a seestar_alp outside Home Assistant
+
+If seestar_alp runs on another machine (a Proxmox container, a Raspberry Pi next
+to the scope), its web UI is normally only reachable on your LAN. With
+`proxy_external_webui: true` this app adds a **Seestar** sidebar panel that
+reverse-proxies that web UI, and its imaging server (live `/vid`, `/live/status`)
+under `/_imaging/`, through Home Assistant's ingress — so it also works in the
+companion app away from home, behind HTTPS.
+
+seestar_alp's pages use root-relative and absolute `http://host:7556` URLs, so
+the proxy rewrites HTML, JavaScript and CSS responses onto the ingress path;
+streams pass through unbuffered. A page that assembles URLs some other way may
+still escape the prefix — open your instance directly then.
+
 ## Options reference
 
 | Option | Type | Default | Description |
@@ -133,6 +147,7 @@ same scope: a Seestar serves its command channel to one client at a time.
 | `alpaca_host` | string | `""` | Blank = find the seestar_alp add-on automatically (see [Finding the seestar_alp driver](#finding-the-seestar_alp-driver)). Set to `host:port` of a specific seestar_alp to use that one. |
 | `alpaca_webui_port` | port | `5432` | The port the seestar_alp web UI is served on, where each scope's address is read (`/config.json`) for the preview. Change only for a seestar_alp rebound elsewhere. |
 | `imaging_port` | port | `7556` | Port of seestar_alp's imaging server on the Alpaca host, where the Live view camera grabs its `/vid` MJPEG frames. Change only for an external seestar_alp bound to a non-stock imaging port. |
+| `proxy_external_webui` | bool | `false` | For a seestar_alp **outside** Home Assistant: serve its web UI and live view through ingress (the **Seestar** sidebar panel and the companion app — also remotely, without exposing the seestar_alp host). Target: `alpaca_host`, or the endpoint discovery found. Off = no panel (the seestar_alp add-on has its own). See [Web UI of a seestar_alp outside Home Assistant](#web-ui-of-a-seestar_alp-outside-home-assistant). |
 | `mqtt_host` | string | `""` | Blank = use the Mosquitto add-on via the Supervisor. Set to override with another broker. |
 | `mqtt_port` | port | `1883` | Ignored while `mqtt_host` is blank (the Supervisor service supplies the port). Set `8883` for a TLS broker when overriding `mqtt_host`. |
 | `mqtt_username` | string | `""` | Broker username. Leave blank with the Mosquitto add-on. |

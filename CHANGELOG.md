@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Option `proxy_external_webui` (default off): for a seestar_alp **outside**
+  Home Assistant, a **Seestar** sidebar panel reverse-proxies its web UI and
+  imaging server (live view, status stream) through ingress — in the sidebar and
+  the companion app, also remotely and behind HTTPS. URLs in HTML/JS/CSS are
+  rewritten onto the ingress path. Target: `alpaca_host`, or the endpoint the
+  bridge found (shared with the proxy via `/run/seestar/alpaca_endpoint`).
 - Phase-2 control layer: safety-gated MQTT command entities per scope (imaging
   sessions, goto, saved-plan execution, settings, power) behind two default-off
   safety switches, with every dispatch outcome surfaced on a **Last command
